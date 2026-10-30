@@ -14,7 +14,7 @@ import { ActiveStrip } from './components/ActiveStrip.js';
 import { en, zh } from './locale/dict.js';
 import { makeTranslate, setTranslate, t } from './locale/index.js';
 import { Panel } from './components/Panel.js';
-import { RightTab } from './components/RightTab.js';
+import { RightTab, type RightTabProps } from './components/RightTab.js';
 import { TreeIcon } from './components/icons.js';
 
 const TAB_ID = 'archctrl';
@@ -54,11 +54,12 @@ interface ClientScope extends SlotContext {
 /**
  * The right rail's mount point.
  *
- * The tab is inside a Session but carries no repository of its own, so it asks
- * the same workspaces route the panel uses rather than inventing a third source.
+ * The tab is inside a Session, so it forwards the Session identity the slot
+ * provides: the repository to read is that Session's working directory, not a
+ * repository chosen from the global list.
  */
-function RightRailMount(): ReactNode {
-  return <RightTab />;
+function RightRailMount(props: RightTabProps): ReactNode {
+  return <RightTab {...props} />;
 }
 
 export function apply(ctx: SlotContext): void {

@@ -13,14 +13,21 @@ import { api } from '../lib/api.js';
 import { Badge } from './ui/badge.js';
 import { t } from '../locale/index.js';
 
-export function ActiveStrip() {
+export interface ActiveStripProps {
+  /** Owning Session; the Host supplies this to the session-scoped dock. */
+  readonly sessionId?: string;
+}
+
+export function ActiveStrip({ sessionId = '' }: ActiveStripProps = {}) {
   const [active, setActive] = useState<ActiveAnswer | null>(null);
 
   useEffect(() => {
     let live = true;
     const tick = async (): Promise<void> => {
       try {
-        const answer = await api.active('');
+        // The reading log belongs to one Session. Asking without its identity
+        // returns every Session's fallback, which is none.
+        const answer = await api.active(sessionId);
         if (live) setActive(answer);
       } catch {
         if (live) setActive(null);
@@ -32,7 +39,7 @@ export function ActiveStrip() {
       live = false;
       clearInterval(timer);
     };
-  }, []);
+  }, [sessionId]);
 
   if (active === null || active.read.length === 0) return null;
   const read = active.contracts.filter((contract) => contract.read);

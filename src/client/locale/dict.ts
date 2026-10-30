@@ -99,6 +99,7 @@ export const en: Dictionary = {
   'strip.title': 'Architecture contracts this conversation has read',
 
   'state.reading': 'Reading {root}…',
+  'state.locating': 'Locating this session’s workspace…',
   'state.no-workspace': 'no workspace could be resolved (registry {registry}, sessions {sessions})',
   'state.no-selection': 'no workspace selected',
   'state.no-contracts': 'no workspace with .archctrl contracts',
@@ -226,6 +227,7 @@ export const zh: Dictionary = {
   'strip.title': '本会话已读的架构契约',
 
   'state.reading': '正在读取 {root}…',
+  'state.locating': '正在定位本会话的工作区…',
   'state.no-workspace': '找不到可用的工作区（registry {registry}，sessions {sessions}）',
   'state.no-selection': '未选择工作区',
   'state.no-contracts': '没有包含 .archctrl 契约的工作区',
