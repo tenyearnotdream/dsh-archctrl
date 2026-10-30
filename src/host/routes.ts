@@ -6,8 +6,8 @@
  * rather than caching: the panel must show the files as they are.
  */
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import type {
   ActiveAnswer,
@@ -16,8 +16,20 @@ import type {
   WorkspacesAnswer,
 } from '../shared/contracts.js';
 import { checkTree } from './check.js';
-import { applyContract, judgeContract, type LlmLike } from './judge.js';
+import {
+  applyOwnershipAnswers,
+  contestedPaths,
+  ownershipQuestions,
+  proposalModules,
+  proposeFrontmatter,
+  renderFrontmatter,
+  scaffoldContract,
+  scaffoldPath,
+  withFrontmatter,
+} from './onboard.js';
+import { applyContract, judgeContract, resolveOwnership, type LlmLike } from './judge.js';
 import { impact, reviewChanges } from './impact.js';
+import { git as gitCommit } from './tree.js';
 import { readTree } from './tree.js';
 
 export const ROUTES = {
@@ -30,6 +42,11 @@ export const ROUTES = {
   apply: '/api/archctrl/apply',
   workspaces: '/api/archctrl/workspaces',
   active: '/api/archctrl/active',
+  // Onboarding: diagnose a tree that was written by hand, then propose the
+  // frontmatter it is missing or a scaffold for a repository that has none.
+  diagnose: '/api/archctrl/diagnose',
+  repair: '/api/archctrl/repair',
+  scaffold: '/api/archctrl/scaffold',
 } as const;
 
 export type RoutePath = (typeof ROUTES)[keyof typeof ROUTES];
@@ -263,6 +280,146 @@ export function createRoutes(services: RouteServices): Record<RoutePath, RouteHa
       }
     },
 
+    [ROUTES.diagnose]: async (request) => {
+      const body = await readBody(request);
+      const root = services.resolveRoot(request, body);
+      if (root === undefined) return fail('no-root', 'no working directory');
+
+      const tree = requireTree(root);
+      if (tree === null) {
+        // No tree at all is a diagnosis, not a failure: the panel needs to say
+        // "this repository has no contracts yet" and offer a scaffold.
+        return ok({
+          state: 'empty',
+          root,
+          modules: proposalModules(root),
+          contracts: [],
+          frontmatter: [],
+        });
+      }
+
+      const checked = checkTree(tree);
+      const proposals = proposeFrontmatter(tree);
+      // A tree with files but no declarations is the "hand-written documents"
+      // case: the content is fine, the scope was never stated.
+      const undeclared = tree.contracts.filter((c) => c.owns.length === 0).length;
+      return ok({
+        state: undeclared === 0 ? 'declared' : 'undeclared',
+        root,
+        modules: [],
+        contracts: tree.contracts.map((c) => ({
+          module: c.module,
+          contract: c.contract,
+          tokens: c.tokens,
+          owns: c.owns.length,
+        })),
+        frontmatter: proposals.map((p) => ({
+          ...p,
+          block: renderFrontmatter(p.owns),
+        })),
+        totals: {
+          contracts: tree.contracts.length,
+          undeclared,
+          errors: checked.errors.length,
+          warnings: checked.warnings.length,
+        },
+      });
+    },
+
+    [ROUTES.repair]: async (request, runtime) => {
+      const body = await readBody(request);
+      const root = services.resolveRoot(request, body);
+      if (root === undefined) return fail('no-root', 'no working directory');
+      const tree = requireTree(root);
+      if (tree === null) return fail('no-archctrl', `.archctrl was not found under ${root}`);
+
+      // `apply: false` is the default: a repair is shown as a proposal first.
+      const apply = body.apply === true;
+      const proposals = proposeFrontmatter(tree);
+      const contested = contestedPaths(proposals);
+
+      // A contested path needs a reading of intent; an uncontested one is a
+      // statement the document already made. Asking about the cheap case would
+      // spend model tokens to confirm a citation.
+      let resolved: Awaited<ReturnType<typeof resolveOwnership>> = [];
+      let modelNote: string | undefined;
+      if (body.useModel === true && contested.length > 0) {
+        if (runtime.llm === undefined) {
+          modelNote = 'no-llm';
+        } else if (runtime.llmConfig === undefined) {
+          modelNote = 'no-model';
+        } else {
+          try {
+            resolved = await resolveOwnership(
+              runtime.llm,
+              runtime.llmConfig,
+              ownershipQuestions(tree, contested, 2),
+              request.signal,
+            );
+          } catch (error) {
+            modelNote = error instanceof Error ? error.message : String(error);
+          }
+        }
+      }
+
+      const merged = applyOwnershipAnswers(proposals, resolved);
+      const results: {
+        contract: string;
+        owns: readonly string[];
+        unresolved: readonly string[];
+        applied: boolean;
+        commit?: string;
+      }[] = [];
+
+      for (const proposal of merged) {
+        if (!apply || proposal.owns.length === 0) {
+          results.push({ ...proposal, applied: false });
+          continue;
+        }
+        const commit = insertFrontmatter(tree.root, proposal.contract, proposal.owns);
+        results.push({
+          contract: proposal.contract,
+          owns: proposal.owns,
+          unresolved: proposal.unresolved,
+          applied: commit !== undefined,
+          ...(commit === undefined ? {} : { commit }),
+        });
+      }
+
+      return ok({
+        applied: apply,
+        proposed: proposals.length,
+        contested: contested.length,
+        resolved: resolved.length,
+        ...(modelNote === undefined ? {} : { modelNote }),
+        results,
+      });
+    },
+
+    [ROUTES.scaffold]: async (request) => {
+      const body = await readBody(request);
+      const root = services.resolveRoot(request, body);
+      if (root === undefined) return fail('no-root', 'no working directory');
+
+      const modules = proposalModules(root);
+      const wanted = Array.isArray(body.modules)
+        ? body.modules.filter((m): m is string => typeof m === 'string')
+        : modules.map((m) => m.module);
+      const plan = modules
+        .filter((m) => wanted.includes(m.module))
+        .map((m) => ({
+          module: m.module,
+          path: scaffoldPath(m.module),
+          owns: m.owns,
+          text: scaffoldContract(m.module, m.owns),
+        }));
+
+      if (body.apply !== true) return ok({ applied: false, plan });
+
+      const written = writeScaffold(root, plan);
+      return ok({ applied: true, plan, written });
+    },
+
     [ROUTES.active]: async (request) => {
       const body = await readBody(request);
       const sessionId = typeof body.sessionId === 'string' ? body.sessionId : '';
@@ -281,4 +438,45 @@ export function createRoutes(services: RouteServices): Record<RoutePath, RouteHa
       });
     },
   };
+}
+
+/**
+ * Insert frontmatter into one contract and commit it alone.
+ *
+ * A repair to a document is a commit a reviewer can read by itself; folding it
+ * into the code commit is what makes `git log` useless for both.
+ */
+function insertFrontmatter(root: string, contract: string, owns: readonly string[]): string | undefined {
+  const full = join(root, contract);
+  const source = readFileSync(full, 'utf8');
+  if (source.startsWith('---\n')) return undefined;
+  writeFileSync(full, withFrontmatter(source, `${renderFrontmatter(owns)}`), 'utf8');
+  const message = `docs(archctrl): declare scope for ${contract}`;
+  if (gitCommit(root, ['add', '--', contract]) === null) return undefined;
+  if (gitCommit(root, ['commit', '-m', message, '--', contract]) === null) return undefined;
+  return gitCommit(root, ['rev-parse', '--short', 'HEAD']) ?? undefined;
+}
+
+/** Write a scaffold, creating directories, and commit the set as one change. */
+function writeScaffold(
+  root: string,
+  plan: readonly { path: string; text: string }[],
+): { path: string; commit?: string }[] {
+  const out: { path: string; commit?: string }[] = [];
+  for (const entry of plan) {
+    const full = join(root, entry.path);
+    mkdirSync(dirname(full), { recursive: true });
+    writeFileSync(full, entry.text, 'utf8');
+    out.push({ path: entry.path });
+  }
+  if (plan.length === 0) return out;
+  const paths = plan.map((entry) => entry.path);
+  if (gitCommit(root, ['add', '--', ...paths]) !== null) {
+    const message = `docs(archctrl): scaffold ${paths.length} contracts`;
+    if (gitCommit(root, ['commit', '-m', message, '--', ...paths]) !== null) {
+      const hash = gitCommit(root, ['rev-parse', '--short', 'HEAD']);
+      if (hash !== null) for (const entry of out) entry.commit = hash;
+    }
+  }
+  return out;
 }

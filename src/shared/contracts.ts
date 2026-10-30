@@ -164,3 +164,37 @@ export interface ActiveAnswer {
 export type RouteAnswer<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
+
+/** What onboarding found when it read a repository. */
+export interface Diagnosis {
+  /** `empty` has no contracts; `undeclared` has documents with no scope. */
+  readonly state: 'empty' | 'undeclared' | 'declared';
+  readonly root: string;
+  readonly modules: readonly { module: string; owns: readonly string[]; because: string }[];
+  readonly contracts: readonly { module: string | null; contract: string; tokens: number; owns: number }[];
+  readonly frontmatter: readonly {
+    module: string | null;
+    contract: string;
+    owns: readonly string[];
+    unresolved: readonly string[];
+    block: string;
+  }[];
+  readonly totals?: { contracts: number; undeclared: number; errors: number; warnings: number };
+}
+
+/** One accepted repair. */
+export interface RepairResult {
+  readonly contract: string;
+  readonly owns: readonly string[];
+  readonly unresolved: readonly string[];
+  readonly applied: boolean;
+  readonly commit?: string;
+}
+
+/** One scaffolded contract. */
+export interface ScaffoldEntry {
+  readonly module: string;
+  readonly path: string;
+  readonly owns: readonly string[];
+  readonly text: string;
+}

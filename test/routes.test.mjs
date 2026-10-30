@@ -6,7 +6,7 @@
 // So these tests call each route with a real Request and assert on the response.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -103,9 +103,12 @@ test('every declared route mounts', () => {
       '/api/archctrl/apply',
       '/api/archctrl/check',
       '/api/archctrl/contract',
+      '/api/archctrl/diagnose',
       '/api/archctrl/judge',
       '/api/archctrl/propose',
+      '/api/archctrl/repair',
       '/api/archctrl/review',
+      '/api/archctrl/scaffold',
       '/api/archctrl/state',
       '/api/archctrl/workspaces',
     ]);
@@ -237,5 +240,116 @@ test('apply refuses an empty revision instead of truncating a contract', async (
     assert.equal(body.error.code, 'empty-body');
   } finally {
     repo.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Onboarding
+//
+// A request for these three answers must never throw: "this repository has no
+// contracts" is a diagnosis the panel renders, not a failure.
+// ---------------------------------------------------------------------------
+
+test('diagnose reports an empty repository instead of failing', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'archctrl-empty-'));
+  try {
+    mkdirSync(join(dir, 'internal', 'middleware'), { recursive: true });
+    writeFileSync(join(dir, 'internal', 'middleware', 'auth.go'), 'package middleware\n');
+    const routes = mount({ root: dir });
+    const body = await callRoute(routes, 'GET', '/api/archctrl/diagnose', { root: dir });
+    assert.equal(body.ok, true);
+    assert.equal(body.value.state, 'empty');
+    assert.ok(body.value.modules.length > 0, 'the layout should suggest modules');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('diagnose reports a hand-written tree as undeclared', async () => {
+  const repo = makeRepo();
+  try {
+    const routes = mount({ root: repo.dir });
+    const body = await callRoute(routes, 'GET', '/api/archctrl/diagnose', { root: repo.dir });
+    assert.equal(body.ok, true);
+    // `makeRepo` writes contracts with scope, so this one is already declared.
+    assert.equal(body.value.state, 'declared');
+  } finally {
+    repo.cleanup();
+  }
+});
+
+test('repair proposes without writing by default', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'archctrl-repair-'));
+  try {
+    mkdirSync(join(dir, '.archctrl', 'storage'), { recursive: true });
+    mkdirSync(join(dir, 'internal', 'dao'), { recursive: true });
+    writeFileSync(join(dir, 'internal', 'dao', 'schema.go'), 'package dao\n');
+    writeFileSync(
+      join(dir, '.archctrl', 'storage', 'arch.md'),
+      '# Storage\n\nSee [schema](../../internal/dao/schema.go).\n',
+    );
+    const routes = mount({ root: dir });
+    const body = await callRoute(routes, 'POST', '/api/archctrl/repair', { root: dir, apply: false });
+    assert.equal(body.ok, true);
+    assert.equal(body.value.applied, false);
+    const storage = body.value.results.find((r) => r.contract === 'storage/arch.md');
+    assert.deepEqual(storage.owns, ['internal/dao']);
+    // The proposal must not have touched the file.
+    const onDisk = readFileSync(join(dir, '.archctrl', 'storage', 'arch.md'), 'utf8');
+    assert.equal(onDisk.startsWith('---'), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('repair reports no model instead of guessing an owner', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'archctrl-conflict-'));
+  try {
+    for (const [module, line] of [
+      ['a', '启动顺序由本契约规定，见 [boot](../../internal/middleware/auth.go)。'],
+      ['b', '本契约只提到 [auth](../../internal/middleware/auth.go)。'],
+    ]) {
+      mkdirSync(join(dir, '.archctrl', module), { recursive: true });
+      writeFileSync(join(dir, '.archctrl', module, 'arch.md'), `# ${module}\n\n${line}\n`);
+    }
+    mkdirSync(join(dir, 'internal', 'middleware'), { recursive: true });
+    writeFileSync(join(dir, 'internal', 'middleware', 'auth.go'), 'package middleware\n');
+
+    const routes = mount({ root: dir, withLlm: false });
+    const body = await callRoute(routes, 'POST', '/api/archctrl/repair', {
+      root: dir,
+      apply: false,
+      useModel: true,
+    });
+    assert.equal(body.ok, true);
+    assert.equal(body.value.contested, 1);
+    // A conflict left unassigned is an error the author can act on; a guessed
+    // owner would be a rule nobody decided.
+    assert.equal(body.value.resolved, 0);
+    assert.equal(body.value.modelNote, 'no-llm');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('scaffold plans without writing, then writes on request', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'archctrl-scaffold-'));
+  try {
+    mkdirSync(join(dir, 'internal', 'middleware'), { recursive: true });
+    writeFileSync(join(dir, 'internal', 'middleware', 'auth.go'), 'package middleware\n');
+
+    const routes = mount({ root: dir });
+    const planned = await callRoute(routes, 'POST', '/api/archctrl/scaffold', { root: dir });
+    assert.equal(planned.ok, true);
+    assert.equal(planned.value.applied, false);
+    assert.ok(planned.value.plan.length > 0);
+    assert.equal(existsSync(join(dir, '.archctrl')), false);
+
+    const written = await callRoute(routes, 'POST', '/api/archctrl/scaffold', { root: dir, apply: true });
+    assert.equal(written.ok, true);
+    assert.equal(written.value.applied, true);
+    assert.ok(existsSync(join(dir, '.archctrl', 'middleware', 'arch.md')));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

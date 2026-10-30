@@ -15,13 +15,14 @@ import { ActiveStrip } from './ActiveStrip.js';
 import { ContractDetail } from './ContractDetail.js';
 import { ContractTree } from './ContractTree.js';
 import { Overview } from './Overview.js';
+import { Onboarding } from './Onboarding.js';
 import { ReviewPanel } from './ReviewPanel.js';
 import { Badge } from './ui/badge.js';
 import { Button } from './ui/button.js';
 import { Segmented } from './ui/switch.js';
 import { t } from '../locale/index.js';
 
-type Mode = 'tree' | 'review';
+type Mode = 'tree' | 'review' | 'onboard';
 type Scope = 'active' | 'all';
 
 /** The reading log is served by the same Host route the strip uses. */
@@ -65,6 +66,9 @@ export function Panel() {
 
   const state = tree.state;
   const activeCount = state.contracts.filter((c) => reading.read.has(String(c.module))).length;
+  // A tree that exists but never stated its scope is the one state a reader
+  // cannot see from the tree itself: the documents look complete.
+  const undeclared = state.contracts.filter((c) => c.owns.length === 0).length;
 
   return (
     <div className="archctrl-root">
@@ -98,13 +102,30 @@ export function Panel() {
           <Button size="sm" onClick={() => setMode(mode === 'review' ? 'tree' : 'review')}>
             {mode === 'review' ? t('review.back-to-tree') : t('review.title')}
           </Button>
+          <Button
+            size="sm"
+            variant={undeclared > 0 ? 'danger' : 'secondary'}
+            onClick={() => setMode(mode === 'onboard' ? 'tree' : 'onboard')}
+          >
+            {mode === 'onboard' ? t('review.back-to-tree') : t('onboard.title')}
+          </Button>
           <Button size="sm" variant="primary" onClick={tree.reload} disabled={tree.loading}>
             {tree.loading ? t('header.refreshing') : t('header.refresh')}
           </Button>
         </div>
       </header>
 
-      {mode === 'review' ? (
+      {mode === 'onboard' ? (
+        <div className="archctrl-scroll min-h-0 flex-1">
+          <Onboarding
+            root={workspaces.root}
+            onDone={() => {
+              tree.reload();
+              setMode('tree');
+            }}
+          />
+        </div>
+      ) : mode === 'review' ? (
         <div className="archctrl-scroll min-h-0 flex-1">
           <ReviewPanel root={workspaces.root} />
         </div>

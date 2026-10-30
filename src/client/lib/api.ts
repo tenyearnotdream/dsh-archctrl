@@ -9,6 +9,9 @@
 import type {
   ActiveAnswer,
   ApplyReceipt,
+  Diagnosis,
+  RepairResult,
+  ScaffoldEntry,
   CheckResult,
   ContractRecord,
   Judgement,
@@ -54,4 +57,22 @@ export const api = {
   apply: (root: string, module: string | null, body: string): Promise<ApplyReceipt> =>
     post('api/archctrl/apply', { root, module: module ?? 'root', body }),
   active: (sessionId: string): Promise<ActiveAnswer> => post('api/archctrl/active', { sessionId }),
+  diagnose: (root: string): Promise<Diagnosis> => post('api/archctrl/diagnose', { root }),
+  repair: (
+    root: string,
+    apply: boolean,
+    useModel = false,
+  ): Promise<{
+    applied: boolean;
+    proposed: number;
+    contested: number;
+    resolved: number;
+    modelNote?: string;
+    results: RepairResult[];
+  }> => post('api/archctrl/repair', { root, apply, useModel }),
+  scaffold: (root: string, options: { apply: boolean; modules?: string[] }): Promise<{
+    applied: boolean;
+    plan: ScaffoldEntry[];
+    written?: { path: string; commit?: string }[];
+  }> => post('api/archctrl/scaffold', { root, ...options }),
 };

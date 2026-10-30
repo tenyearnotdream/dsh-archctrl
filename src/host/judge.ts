@@ -187,3 +187,88 @@ export function applyContract(tree: Tree, contract: ContractRecord, body: string
   const hash = git(tree.root, ['rev-parse', '--short', 'HEAD']) ?? '';
   return { path: contract.path, commit: hash, message };
 }
+
+/**
+ * Ownership resolution: which contract governs which path.
+ *
+ * A citation says a document *mentions* a path. Ownership says a document
+ * *decides* that path, and only one contract may. Deriving ownership from
+ * citations alone put five contracts on `app/backend/cmd` — every one of them
+ * legitimately mentions startup — so the choice has to be a reading of what each
+ * document claims, which is exactly what a model can do and a regex cannot.
+ */
+export const OWNERSHIP_INSTRUCTIONS = `You assign code paths to architecture contracts.
+
+For each path, choose the ONE contract that decides how that code must be built
+or changed. A contract that merely mentions a path is not its owner: a startup
+file is mentioned by every module but is governed by the one that defines
+startup order.
+
+Rules:
+1. Exactly one contract per path. If none decides it, answer "none".
+2. Prefer the narrowest contract that states a rule about the path.
+3. Test and generated files belong to the contract that owns the code they
+   verify or generate.
+4. Answer only the JSON asked for. Never invent a contract name.`;
+
+/** One path and the contracts that cited it. */
+export interface OwnershipQuestion {
+  readonly path: string;
+  readonly candidates: readonly { module: string; title: string; excerpt: string }[];
+}
+
+export interface OwnershipAnswer {
+  readonly path: string;
+  readonly module: string | null;
+  readonly because: string;
+}
+
+/** Ask the model to resolve ownership for a batch of contested paths. */
+export async function resolveOwnership(
+  llm: LlmLike,
+  callConfig: { provider: string; model: string },
+  questions: readonly OwnershipQuestion[],
+  signal?: AbortSignal,
+): Promise<OwnershipAnswer[]> {
+  if (questions.length === 0) return [];
+  const prompt = [
+    'Resolve ownership for these paths.',
+    '',
+    ...questions.map((q) =>
+      [
+        `PATH: ${q.path}`,
+        ...q.candidates.map((c) => `  - ${c.module}: ${c.title}\n    ${c.excerpt}`),
+      ].join('\n'),
+    ),
+    '',
+    'Answer with JSON only:',
+    '{"answers":[{"path":"...","module":"<module or null>","because":"<one clause>"}]}',
+  ].join('\n');
+
+  const prepared = await llm.prepareCall(callConfig, signal);
+  let text = '';
+  for await (const chunk of prepared.stream({
+    provider: prepared.config.provider,
+    model: prepared.config.model,
+    messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+    system: OWNERSHIP_INSTRUCTIONS,
+    signal,
+  })) {
+    if (chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text;
+  }
+
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) throw new Error('ownership answer is not JSON');
+  const parsed: unknown = JSON.parse(text.slice(start, end + 1));
+  const answers = (parsed as { answers?: unknown }).answers;
+  if (!Array.isArray(answers)) throw new Error('ownership answer has no "answers" array');
+  return answers
+    .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+    .map((entry) => ({
+      path: typeof entry.path === 'string' ? entry.path : '',
+      module: typeof entry.module === 'string' && entry.module !== '' && entry.module !== 'none' ? entry.module : null,
+      because: typeof entry.because === 'string' ? entry.because : '',
+    }))
+    .filter((answer) => answer.path !== '');
+}

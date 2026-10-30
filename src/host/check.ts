@@ -7,7 +7,7 @@
  */
 
 import { existsSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 import type { CheckResult, Issue, LagHint } from '../shared/contracts.js';
 import { git, type Tree } from './tree.js';
@@ -22,6 +22,45 @@ const GENERATED = new Set([
   'internal/controller',
   'internal/lib',
 ]);
+
+/**
+ * Does a repository path end with this citation?
+ *
+ * Prose often cites a path relative to a package (`api/models`) while the file
+ * lives deeper (`frontend/src/api/models`). The citation is still a true
+ * statement about the code; resolving it only against the repository root
+ * reported every such sentence as a stale reference.
+ *
+ * Matching is on whole segments, so `api/models` never matches
+ * `oldapi/models`, and a single-segment citation is not matched at all: it names
+ * no structure, so a hit would be a coincidence.
+ */
+function matchesTail(root: string, citation: string): boolean {
+  const segments = citation.split('/').filter(Boolean);
+  if (segments.length < 2) return false;
+  const suffix = `/${citation}`;
+  const walk = (dir: string, depth: number): boolean => {
+    if (depth > 4) return false;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      const rel = full.slice(root.length + 1).split(sep).join('/');
+      if ((rel === citation || rel.endsWith(suffix)) && (entry.isDirectory() || existsSync(full))) {
+        return true;
+      }
+      if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+        if (walk(full, depth + 1)) return true;
+      }
+    }
+    return false;
+  };
+  return walk(root, 0);
+}
 
 /** A path exists in the working tree or, failing that, in HEAD. */
 function pathExists(root: string, path: string): boolean {
@@ -79,11 +118,27 @@ export function checkTree(tree: Tree): CheckResult {
       errors.push({ rule: 'frontmatter', contract: contract.path, message: contract.problem });
     }
     for (const link of contract.links) {
-      if (!byPath.has(link)) {
+      // A link inside `.archctrl/` points at another contract and must resolve to
+      // one: the tree is the thing being navigated. A link outside it is an
+      // ordinary reference to the repository, which is checked for existence —
+      // the same rule the backticked citations get — but never has to be a
+      // contract. Treating both alike reported every code reference as a broken
+      // link, which is what made a mature tree look broken on first open.
+      if (link.startsWith('.archctrl/')) {
+        if (!byPath.has(link)) {
+          errors.push({
+            rule: 'broken-link',
+            contract: contract.path,
+            message: `links to missing contract ${link}`,
+          });
+        }
+        continue;
+      }
+      if (!pathExists(tree.root, link)) {
         errors.push({
-          rule: 'broken-link',
+          rule: 'stale-reference',
           contract: contract.path,
-          message: `links to missing file ${link}`,
+          message: `links to ${link}, which no longer exists`,
         });
       }
     }
@@ -97,13 +152,12 @@ export function checkTree(tree: Tree): CheckResult {
       }
     }
     for (const ref of contract.refs) {
-      if (!pathExists(tree.root, ref)) {
-        errors.push({
-          rule: 'stale-reference',
-          contract: contract.path,
-          message: `references ${ref}, which no longer exists`,
-        });
-      }
+      if (pathExists(tree.root, ref) || matchesTail(tree.root, ref)) continue;
+      errors.push({
+        rule: 'stale-reference',
+        contract: contract.path,
+        message: `references ${ref}, which no longer exists`,
+      });
     }
   }
 

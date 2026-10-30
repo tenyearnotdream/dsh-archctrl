@@ -99,6 +99,58 @@ Frontmatter is never sent to the model and never overwritten.
 The tree is always fully expanded: the hierarchy is fixed and shallow, and
 collapsing it would hide the sibling a reader is comparing against.
 
+## Bringing a repository in
+
+A tree that was written by hand before this plugin existed states its boundaries
+in prose. The plugin cannot read prose, so on first open every code link looks
+like a broken contract link and no path belongs to any module. Three states get
+three answers, and none of them writes until you press a button:
+
+| State | What it means | What the panel offers |
+|---|---|---|
+| **empty** | no `.archctrl` at all | a scaffold: one contract per source directory the repository already has |
+| **undeclared** | documents exist, no `owns:` | scope derived from what each document already cites |
+| **declared** | every contract states its scope | nothing to do |
+
+### Scope from citations
+
+A contract that links to `internal/middleware/auth.go` plainly intends to govern
+that code, so the tool records a decision the author already made. A file becomes
+the directory that holds it, and a nested path is dropped when its parent is
+already claimed.
+
+### Conflicts go to the model
+
+A citation says a document **mentions** a path; ownership says one document
+**decides** it. Deriving from citations alone put five contracts on one startup
+file — all of them legitimately mention startup. `Propose scope (model resolves
+conflicts)` sends only the contested paths, with the sentence that names them:
+
+```
+PATH: internal/middleware
+  - startup: Startup
+    启动顺序由本契约规定，见 ../../internal/middleware/auth.go
+  - reference: Reference
+    本契约只提到 ../../internal/middleware/auth.go 作为参考
+```
+
+That is a reading of intent, which is what a model is for and what a regex is
+not. The cost is proportional to the ambiguity, not the size of the tree.
+
+A conflict left unresolved is reported rather than guessed: an unowned path is a
+warning the author can act on, while a path two contracts both claim is an error
+that blocks the whole tree.
+
+### Repair never invents a rule
+
+- Frontmatter is derived, never authored: the `owns:` block is written above the
+  existing body, which is untouched.
+- A scaffold ships boundaries with **no rules in them** — prompts such as
+  "这个模块负责什么、不负责什么？" — because a contract invented by a tool is a rule
+  nobody decided.
+- Both are proposals first. Writing is a separate, explicit action, and each one
+  commits alone so a reviewer can read it by itself.
+
 ## Development
 
 ```bash

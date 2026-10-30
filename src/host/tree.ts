@@ -19,6 +19,8 @@ const SKIP_PATTERNS = /[*{]/;
 
 export interface Tree {
   readonly root: string;
+  /** Every tracked path in the repository, for suffix matching of citations. */
+  readonly repoPaths?: ReadonlySet<string>;
   readonly contracts: readonly ContractRecord[];
   /** Owned path -> owning module (null for the root index). */
   readonly owners: ReadonlyMap<string, string | null>;
@@ -44,22 +46,43 @@ export function git(root: string, args: readonly string[]): string | null {
   }
 }
 
-/** Every `arch.md` under `.archctrl/`, sorted for a stable tree. */
-function listContractFiles(archDir: string): string[] {
-  const found: string[] = [];
+/**
+ * Every Markdown document under `.archctrl/`, sorted.
+ *
+ * A directory owns one contract, `arch.md`. Any other document beside it is a
+ * supplement the contract links to — a query manual, a decision log — and is
+ * part of the tree even though it carries no scope of its own. Ignoring those
+ * files reported a link to them as broken, which is a tree that was complete
+ * looking broken.
+ */
+function listContractFiles(archDir: string): { path: string; primary: boolean }[] {
+  const found: { path: string; primary: boolean }[] = [];
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (entry.name === 'arch.md') found.push(full);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.name.endsWith('.md')) {
+        found.push({ path: full, primary: entry.name === 'arch.md' });
+      }
     }
   };
   walk(archDir);
-  return found.sort();
+  return found.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-/** `platform/http/arch.md` -> `platform/http`; the root index is null. */
-function moduleOfContract(relativePath: string): string | null {
+/**
+ * `platform/http/arch.md` -> `platform/http`; the root index is null.
+ *
+ * A supplement such as `query/semantics.md` belongs to the module it sits in,
+ * so it reports that module but carries no scope: only `arch.md` declares
+ * ownership, and a supplement must never add a second claimant for one path.
+ */
+function moduleOfContract(relativePath: string, primary: boolean): string | null {
+  if (!primary) {
+    const slash = relativePath.lastIndexOf('/');
+    return slash < 0 ? null : relativePath.slice(0, slash);
+  }
   return relativePath === 'arch.md' ? null : relativePath.slice(0, -'/arch.md'.length);
 }
 
@@ -106,7 +129,7 @@ export function readTree(root: string): Tree | null {
   if (!existsSync(archDir) || !statSync(archDir).isDirectory()) return null;
 
   const contracts: ContractRecord[] = [];
-  for (const full of listContractFiles(archDir)) {
+  for (const { path: full, primary } of listContractFiles(archDir)) {
     const rel = toPosix(relative(archDir, full));
     const text = readFileSync(full, 'utf8');
     const head = parseFrontmatter(text);
@@ -120,7 +143,7 @@ export function readTree(root: string): Tree | null {
 
     const contractPath = toPosix(relative(root, full));
     contracts.push({
-      module: moduleOfContract(rel),
+      module: moduleOfContract(rel, primary),
       contract: rel,
       path: contractPath,
       tokens: approximateTokens(head.body),
@@ -138,6 +161,7 @@ export function readTree(root: string): Tree | null {
   const owners = new Map<string, string | null>();
   const conflicts: { path: string; modules: string[] }[] = [];
   for (const contract of contracts) {
+    if (contract.owns.length === 0) continue;
     for (const owned of contract.owns) {
       const prior = owners.get(owned);
       if (prior !== undefined && prior !== contract.module) {

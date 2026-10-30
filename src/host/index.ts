@@ -466,5 +466,17 @@ export { impact, reviewChanges } from './impact.js';
 export { applyContract, judgeContract } from './judge.js';
 export { readTree, referencedPaths, approximateTokens } from './tree.js';
 export { ROUTES } from './routes.js';
+export {
+  applyOwnershipAnswers,
+  contestedPaths,
+  ownershipQuestions,
+  proposalModules,
+  proposeFrontmatter,
+  renderFrontmatter,
+  scaffoldContract,
+  scaffoldPath,
+  withFrontmatter,
+} from './onboard.js';
+export { resolveOwnership } from './judge.js';
 export type { CheckResult, ContractRecord, ReviewResult, TreeState } from '../shared/contracts.js';
 export type { Tree } from './tree.js';
