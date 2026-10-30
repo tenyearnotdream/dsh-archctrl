@@ -16,6 +16,7 @@ import { ContractTree } from './ContractTree.js';
 import { Overview } from './Overview.js';
 import { Badge } from './ui/badge.js';
 import { Segmented } from './ui/switch.js';
+import { t } from '../locale/index.js';
 
 type Scope = 'active' | 'all';
 
@@ -62,8 +63,8 @@ export function RightTab() {
           value={scope}
           onChange={setScope}
           options={[
-            { value: 'active', label: 'Active', count: activeContracts.length },
-            { value: 'all', label: 'All', count: state.contracts.length },
+            { value: 'active', label: t('scope.active'), count: activeContracts.length },
+            { value: 'all', label: t('scope.all'), count: state.contracts.length },
           ]}
         />
         {state.totals.errors > 0 ? <Badge tone="danger">{state.totals.errors}</Badge> : null}
@@ -75,7 +76,7 @@ export function RightTab() {
       <div className="archctrl-scroll max-h-72 shrink-0 border-b border-border">
         {scope === 'active' && activeContracts.length === 0 ? (
           <p className="px-3 py-2 text-[11px] leading-5 text-muted-foreground">
-            Nothing read yet in this conversation.
+            {t('scope.empty-rail')}
           </p>
         ) : (
           <ContractTree

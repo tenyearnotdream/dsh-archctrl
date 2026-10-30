@@ -18,6 +18,17 @@ import type {
   WorkspacesAnswer,
 } from '../../shared/contracts.js';
 
+/** A refusal from the Host, carrying the stable code the UI translates. */
+export class ApiError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 async function post<T>(path: string, payload: unknown): Promise<T> {
   const response = await fetch(path, {
     method: 'POST',
@@ -26,7 +37,8 @@ async function post<T>(path: string, payload: unknown): Promise<T> {
   });
   if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
   const body = (await response.json()) as RouteAnswer<T>;
-  if (!body.ok) throw new Error(body.error.message);
+  // The Host reports a stable code; the message is a fallback, not the contract.
+  if (!body.ok) throw new ApiError(body.error.code, body.error.message);
   return body.value;
 }
 

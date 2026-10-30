@@ -19,6 +19,7 @@ import { ReviewPanel } from './ReviewPanel.js';
 import { Badge } from './ui/badge.js';
 import { Button } from './ui/button.js';
 import { Segmented } from './ui/switch.js';
+import { t } from '../locale/index.js';
 
 type Mode = 'tree' | 'review';
 type Scope = 'active' | 'all';
@@ -68,7 +69,7 @@ export function Panel() {
   return (
     <div className="archctrl-root">
       <header className="flex flex-wrap items-center gap-1.5 border-b border-border px-3 py-2">
-        <span className="text-[13px] font-semibold">Architecture</span>
+        <span className="text-[13px] font-semibold">{t('panel.title')}</span>
 
         {workspaces.items.length > 1 ? (
           <select
@@ -88,17 +89,17 @@ export function Panel() {
         )}
 
         <span className="text-[11px] tabular-nums text-muted-foreground">
-          {state.totals.contracts} contracts · {state.totals.tokens} tok
+          {t('header.contracts', { count: state.totals.contracts, tokens: state.totals.tokens })}
         </span>
-        {state.totals.errors > 0 ? <Badge tone="danger">{state.totals.errors} error</Badge> : null}
-        {state.totals.warnings > 0 ? <Badge tone="warning">{state.totals.warnings} warning</Badge> : null}
+        {state.totals.errors > 0 ? <Badge tone="danger">{t('header.errors', { count: state.totals.errors })}</Badge> : null}
+        {state.totals.warnings > 0 ? <Badge tone="warning">{t('header.warnings', { count: state.totals.warnings })}</Badge> : null}
 
         <div className="ml-auto flex items-center gap-1">
           <Button size="sm" onClick={() => setMode(mode === 'review' ? 'tree' : 'review')}>
-            {mode === 'review' ? 'Back to tree' : 'Review before commit'}
+            {mode === 'review' ? t('review.back-to-tree') : t('review.title')}
           </Button>
           <Button size="sm" variant="primary" onClick={tree.reload} disabled={tree.loading}>
-            {tree.loading ? 'Refreshing…' : 'Refresh'}
+            {tree.loading ? t('header.refreshing') : t('header.refresh')}
           </Button>
         </div>
       </header>
@@ -115,16 +116,15 @@ export function Panel() {
                 value={scope}
                 onChange={setScope}
                 options={[
-                  { value: 'active', label: 'Active', count: activeCount },
-                  { value: 'all', label: 'All', count: state.contracts.length },
+                  { value: 'active', label: t('scope.active'), count: activeCount },
+                  { value: 'all', label: t('scope.all'), count: state.contracts.length },
                 ]}
               />
             </div>
             <div className="archctrl-scroll min-h-0 flex-1">
               {scope === 'active' && activeCount === 0 ? (
                 <p className="px-3 py-2 text-[11px] leading-5 text-muted-foreground">
-                  This conversation has not read a contract yet. Call <code>arch_impact</code>, or
-                  switch to All.
+                  {t('scope.empty')}
                 </p>
               ) : (
                 <ContractTree

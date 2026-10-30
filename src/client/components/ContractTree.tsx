@@ -11,6 +11,7 @@ import { useMemo } from 'react';
 
 import type { ContractRecord, TreeState } from '../../shared/contracts.js';
 import { cn } from '../lib/utils.js';
+import { t } from '../locale/index.js';
 
 export interface TreeRow {
   readonly contract: ContractRecord;
@@ -70,8 +71,8 @@ export function DriftDot({ status }: { status: DriftStatus }) {
   return (
     <span
       className={cn('size-1.5 shrink-0 rounded-full', DOT_CLASS[status])}
-      title={status}
-      aria-label={status}
+      title={t(`drift.${status}`)}
+      aria-label={t(`drift.${status}`)}
     />
   );
 }
@@ -114,7 +115,7 @@ export function ContractTree({ state, selected, onSelect, read, flat = false }: 
                 {label}
               </span>
               {isRead ? (
-                <span className="shrink-0 text-[10px] text-success" title="read in this session">
+                <span className="shrink-0 text-[10px] text-success" title={t('detail.read-in-session')}>
                   ✓
                 </span>
               ) : null}

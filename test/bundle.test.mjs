@@ -20,6 +20,8 @@ const PACKAGE = '@local/dsh-archctrl';
 /** Minimal React: enough to mount a component tree without a DOM. */
 const React = {
   createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
+  createContext: (value) => ({ Provider: 'Provider', _value: value }),
+  useContext: () => null,
   Fragment: 'Fragment',
   useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
   useEffect: () => {},
@@ -54,6 +56,64 @@ function loadBundle() {
 test('the built bundle exists', () => {
   assert.ok(existsSync(bundlePath), 'run `npm run build:client` first');
   assert.ok(existsSync(hostPath), 'run `npm run build:host` first');
+});
+
+test('the bundle registers both languages with the Host', () => {
+  const { module } = loadBundle();
+  const registered = [];
+  const bound = [];
+  const base = {
+    slots: { inject: (_slot, register) => register(), register: () => () => {} },
+    effect: (factory) => {
+      const disposer = factory();
+      return typeof disposer === 'function' ? disposer : () => {};
+    },
+    get: () => undefined,
+    on: () => () => {},
+  };
+  module.apply({
+    ...base,
+    locale: {
+      register: (namespace, dictionaries) => {
+        registered.push({ namespace, dictionaries });
+        return () => {};
+      },
+      bind: (namespace) => {
+        bound.push(namespace);
+        return (key) => key;
+      },
+    },
+    inject: (_deps, body) =>
+      body({ ...base, sidebarRightTabs: { register: () => () => {} } }),
+  });
+
+  assert.equal(registered.length, 1);
+  assert.deepEqual(Object.keys(registered[0].dictionaries).sort(), ['en', 'zh']);
+  // Both languages must carry the same keys, or one of them silently falls back.
+  const zhKeys = Object.keys(registered[0].dictionaries.zh).sort();
+  const enKeys = Object.keys(registered[0].dictionaries.en).sort();
+  assert.deepEqual(zhKeys, enKeys);
+  assert.equal(bound[0], registered[0].namespace);
+});
+
+test('the bundle still applies without the locale service', () => {
+  const { module } = loadBundle();
+  const base = {
+    slots: { inject: (_slot, register) => register(), register: () => () => {} },
+    effect: (factory) => {
+      const disposer = factory();
+      return typeof disposer === 'function' ? disposer : () => {};
+    },
+    get: () => undefined,
+    on: () => () => {},
+  };
+  // A Host without `locale` must not throw: English is the last fallback.
+  assert.doesNotThrow(() =>
+    module.apply({
+      ...base,
+      inject: (_deps, body) => body({ ...base, sidebarRightTabs: { register: () => () => {} } }),
+    }),
+  );
 });
 
 test('the bundle is a classic script, not an ES module', () => {

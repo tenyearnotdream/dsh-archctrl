@@ -11,6 +11,7 @@ import { useEffect, useState } from 'react';
 import type { ActiveAnswer } from '../../shared/contracts.js';
 import { api } from '../lib/api.js';
 import { Badge } from './ui/badge.js';
+import { t } from '../locale/index.js';
 
 export function ActiveStrip() {
   const [active, setActive] = useState<ActiveAnswer | null>(null);
@@ -40,10 +41,10 @@ export function ActiveStrip() {
   return (
     <div
       className="flex flex-wrap items-center gap-1 px-1 py-0.5 text-[11px] text-muted-foreground"
-      title="Architecture contracts this conversation has read"
+      title={t('strip.title')}
     >
       <span>
-        arch {read.length}/{active.contracts.length} · {tokens} tok
+        {t('strip.summary', { read: read.length, total: active.contracts.length, tokens })}
       </span>
       {read.map((contract) => (
         <Badge key={contract.module} tone="success">

@@ -3,6 +3,7 @@
 import type { TreeState } from '../../shared/contracts.js';
 import { Badge } from './ui/badge.js';
 import { DriftDot } from './ContractTree.js';
+import { t } from '../locale/index.js';
 
 export function Overview({ state }: { state: TreeState }) {
   const sortedHints = [...state.hints].sort((a, b) => b.commits - a.commits);
@@ -11,9 +12,9 @@ export function Overview({ state }: { state: TreeState }) {
   return (
     <div className="archctrl-scroll px-3 py-2.5">
       <div className="mb-3 flex items-baseline gap-2">
-        <h2 className="text-[13px] font-semibold">Overview</h2>
+        <h2 className="text-[13px] font-semibold">{t('overview.title')}</h2>
         <span className="text-[11px] text-muted-foreground">
-          {state.totals.contracts} contracts · {state.totals.tokens} tokens
+          {t('header.contracts', { count: state.totals.contracts, tokens: state.totals.tokens })}
         </span>
       </div>
 
@@ -23,7 +24,7 @@ export function Overview({ state }: { state: TreeState }) {
 
       {state.errors.length === 0 ? null : (
         <section className="mb-3">
-          <h3 className="mb-1 text-[11.5px] font-semibold text-destructive">Errors</h3>
+          <h3 className="mb-1 text-[11.5px] font-semibold text-destructive">{t('overview.errors')}</h3>
           {state.errors.map((issue) => (
             <div
               key={`${issue.rule}:${issue.message}`}
@@ -43,7 +44,7 @@ export function Overview({ state }: { state: TreeState }) {
 
       {state.warnings.length === 0 ? null : (
         <section className="mb-3">
-          <h3 className="mb-1 text-[11.5px] font-semibold text-warning">Warnings</h3>
+          <h3 className="mb-1 text-[11.5px] font-semibold text-warning">{t('overview.warnings')}</h3>
           {state.warnings.map((issue) => (
             <div
               key={`${issue.rule}:${issue.message}`}
@@ -61,18 +62,18 @@ export function Overview({ state }: { state: TreeState }) {
       {sortedHints.length === 0 ? null : (
         <section>
           <h3 className="mb-1 flex items-baseline gap-2 text-[11.5px] font-semibold">
-            Lagging contracts
-            <Badge tone="neutral">informational</Badge>
+            {t('overview.lagging')}
+            <Badge tone="neutral">{t('overview.informational')}</Badge>
           </h3>
           <p className="mb-1.5 text-[11px] text-muted-foreground">
-            A contract may legitimately lag ordinary code changes. Highest first.
+            {t('overview.lagging-note')}
           </p>
           <ul className="grid gap-0.5">
             {sortedHints.map((hint) => (
               <li key={hint.contract} className="flex items-baseline gap-2 text-[11.5px] leading-5">
                 <code className="min-w-0 truncate text-[11px] text-muted-foreground">{hint.contract}</code>
                 <span className="ml-auto shrink-0 tabular-nums text-muted-foreground">
-                  {hint.commits} commit(s)
+                  {t('overview.commits', { count: hint.commits })}
                 </span>
               </li>
             ))}
@@ -82,7 +83,7 @@ export function Overview({ state }: { state: TreeState }) {
 
       {clean ? (
         <p className="mt-3 text-[11px] text-muted-foreground">
-          No problems found: every linked contract exists and every cited path is present.
+          {t('overview.clean')}
         </p>
       ) : null}
     </div>

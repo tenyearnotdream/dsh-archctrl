@@ -11,11 +11,14 @@ import './index.css';
 import type { ReactNode } from 'react';
 
 import { ActiveStrip } from './components/ActiveStrip.js';
+import { en, zh } from './locale/dict.js';
+import { makeTranslate, setTranslate } from './locale/index.js';
 import { Panel } from './components/Panel.js';
 import { RightTab } from './components/RightTab.js';
 import { TreeIcon } from './components/icons.js';
 
 const TAB_ID = 'archctrl';
+const LOCALE_NS = 'archctrl';
 
 /** The shape of the DSH Client context this bundle uses. */
 interface SlotContext {
@@ -28,6 +31,10 @@ interface SlotContext {
   };
   inject(deps: readonly string[], body: (scope: ClientScope) => unknown): unknown;
   effect(factory: () => (() => void) | void): (() => void) | void;
+  readonly locale?: {
+    register(namespace: string, dictionaries: { zh: Record<string, string>; en: Record<string, string> }): () => void;
+    bind(namespace: string): (key: string, values?: Record<string, string | number>) => string;
+  };
 }
 
 interface ClientScope extends SlotContext {
@@ -53,6 +60,17 @@ function RightRailMount(): ReactNode {
 }
 
 export function apply(ctx: SlotContext): void {
+  // Register both languages once. The Host picks the active one and owns the
+  // fallback chain, so the plugin never inspects the language itself.
+  if (ctx.locale !== undefined) {
+    ctx.effect(() => ctx.locale?.register(LOCALE_NS, { zh, en }));
+    setTranslate(ctx.locale.bind(LOCALE_NS));
+  } else {
+    // A Host without the locale service still renders: English is the last
+    // link of every chain the Host itself declares.
+    setTranslate(makeTranslate(en));
+  }
+
   ctx.slots.inject('sidebar.panellist', () =>
     ctx.slots.register(
       {

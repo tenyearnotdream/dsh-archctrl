@@ -8,7 +8,14 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import { ContractTree, flatten, statusOf } from '../ContractTree';
+import { en } from '../../locale/dict';
+import { makeTranslate, setTranslate } from '../../locale/index';
 import type { TreeState } from '../../../shared/contracts';
+
+/** Components read the module-level translator the Host installs in `apply`. */
+function installTranslator(): void {
+  setTranslate(makeTranslate(en));
+}
 
 const contract = (module: string | null, tokens = 100) => ({
   module,
@@ -74,6 +81,7 @@ describe('statusOf', () => {
 
 describe('ContractTree', () => {
   it('renders every row, always expanded, with its token count', () => {
+    installTranslator();
     render(<ContractTree state={state()} selected={undefined} onSelect={() => {}} read={new Set()} />);
     expect(screen.getByText('arch.md')).toBeTruthy();
     expect(screen.getByText('platform/http')).toBeTruthy();
@@ -81,7 +89,10 @@ describe('ContractTree', () => {
   });
 
   it('marks a contract the conversation has read', () => {
+    installTranslator();
     render(<ContractTree state={state()} selected={undefined} onSelect={() => {}} read={new Set(['project'])} />);
+    // The title comes from the dictionary, so this also proves the translator is
+    // wired in: an unregistered `t` would render the raw key.
     expect(screen.getAllByTitle('read in this session')).toHaveLength(1);
   });
 });

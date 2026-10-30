@@ -18,6 +18,8 @@ import { cn } from '../lib/utils.js';
 import { Badge } from './ui/badge.js';
 import { Button } from './ui/button.js';
 import { DriftDot } from './ContractTree.js';
+import { t } from '../locale/index.js';
+import { describeError } from '../lib/errors.js';
 
 interface Entry {
   busy: boolean;
@@ -27,6 +29,20 @@ interface Entry {
 }
 
 const EMPTY: Entry = { busy: false, verdict: null, error: null, applied: null };
+
+/** Map the Host's stable verdict string onto a dictionary key. */
+function verdictKey(verdict: ReviewResult['verdict']): string {
+  switch (verdict) {
+    case 'no architectural surface changed':
+      return 'verdict.no-surface';
+    case 'code changed in modules whose contracts were not updated':
+      return 'verdict.contracts-not-updated';
+    case 'changed paths are cited by a contract; verify those invariants still hold':
+      return 'verdict.cited-paths';
+    default:
+      return 'verdict.involved';
+  }
+}
 
 function toneOf(mod: ImpactModule) {
   if (mod.contractTouched) return 'neutral' as const;
@@ -52,9 +68,9 @@ function ModuleCard({
       <header className="flex flex-wrap items-center gap-1.5 border-b border-border px-2.5 py-1.5">
         <DriftDot status={mod.contractTouched ? 'ok' : mod.commitsSinceContract > 0 ? 'warn' : 'lag'} />
         <span className="text-[12px] font-semibold">{mod.module}</span>
-        <Badge>{mod.contract ?? 'no contract'}</Badge>
-        <Badge tone={toneOf(mod)}>{mod.contractTouched ? 'updated' : 'not updated'}</Badge>
-        {mod.commitsSinceContract > 0 ? <Badge>{mod.commitsSinceContract} behind</Badge> : null}
+        <Badge>{mod.contract ?? t('review.no-contract')}</Badge>
+        <Badge tone={toneOf(mod)}>{mod.contractTouched ? t('review.contract-updated') : t('review.contract-not-updated')}</Badge>
+        {mod.commitsSinceContract > 0 ? <Badge>{t('review.behind', { count: mod.commitsSinceContract })}</Badge> : null}
         <span className="ml-auto text-[10.5px] tabular-nums text-muted-foreground">
           {mod.contractTokens} tok
         </span>
@@ -62,31 +78,31 @@ function ModuleCard({
 
       <div className="px-2.5 py-2 text-[11.5px] leading-5 text-muted-foreground">
         <div>
-          {mod.paths.length} owned path(s)
+          {t('review.owned-paths', { count: mod.paths.length })}
           {mod.diffStat === '' ? null : ` · ${mod.diffStat}`}
         </div>
         {mod.citesTouchedPaths.length === 0 ? null : (
-          <div className="break-words">cites changed paths: {mod.citesTouchedPaths.join(', ')}</div>
+          <div className="break-words">{t('review.cites-changed', { paths: mod.citesTouchedPaths.join(', ') })}</div>
         )}
         {mod.verifies.length === 0 ? null : (
-          <div className="break-words">verifies: {mod.verifies.join(', ')}</div>
+          <div className="break-words">{t('review.verifies', { paths: mod.verifies.join(', ') })}</div>
         )}
 
         {entry.applied === null ? null : (
           <div className="mt-2 rounded-md border border-success/60 px-2 py-1.5">
-            <div className="font-medium text-success">committed {entry.applied.commit}</div>
+            <div className="font-medium text-success">{t('review.committed', { commit: entry.applied.commit })}</div>
             <div className="break-words">{entry.applied.path} — {entry.applied.message}</div>
-            <div>Your code change is still uncommitted.</div>
+            <div>{t('review.committed-note')}</div>
           </div>
         )}
 
         {entry.applied !== null ? null : (
           <div className="mt-1.5">
             <Button size="sm" onClick={onAsk} disabled={entry.busy || mod.contract === null}>
-              {entry.busy ? 'Asking…' : verdict === null ? 'Ask model' : 'Ask again'}
+              {entry.busy ? t('review.asking') : verdict === null ? t('review.ask') : t('review.ask-again')}
             </Button>
             <span className="ml-2 text-[10.5px]">
-              {verdict === null ? 'This contract only, using the conversation’s model.' : ''}
+              {verdict === null ? t('review.ask-hint') : ''}
             </span>
 
             {verdict === null ? null : (
@@ -97,11 +113,11 @@ function ModuleCard({
                 )}
               >
                 <div className={cn('font-medium', verdict.change ? 'text-warning' : 'text-success')}>
-                  {verdict.change ? 'contract needs an update' : 'contract still holds'}
+                  {verdict.change ? t('review.needs-update') : t('review.still-holds')}
                 </div>
                 {verdict.reason === '' ? null : <div className="mt-0.5">{verdict.reason}</div>}
                 {verdict.basis === '' ? null : (
-                  <div className="mt-0.5">basis: {verdict.basis}</div>
+                  <div className="mt-0.5">{t('review.basis', { line: verdict.basis })}</div>
                 )}
                 {verdict.change && verdict.body !== undefined ? (
                   <>
@@ -109,10 +125,10 @@ function ModuleCard({
                       {verdict.body}
                     </pre>
                     <Button size="sm" variant="primary" className="mt-2" onClick={onAccept} disabled={entry.busy}>
-                      {entry.busy ? 'Committing…' : 'Apply and commit'}
+                      {entry.busy ? t('review.committing') : t('review.apply')}
                     </Button>
                     <div className="mt-1 text-[10.5px]">
-                      Commits only this document; your code stays uncommitted.
+                      {t('review.committed-note')}
                     </div>
                   </>
                 ) : null}
@@ -160,7 +176,7 @@ export function ReviewPanel({ root }: ReviewPanelProps) {
       setEntries({});
       setBatch(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(describeError(cause));
     } finally {
       setBusy(false);
     }
@@ -174,7 +190,7 @@ export function ReviewPanel({ root }: ReviewPanelProps) {
         patch(module, { verdict, busy: false });
         return { ok: true as const, verdict };
       } catch (cause) {
-        const message = cause instanceof Error ? cause.message : String(cause);
+        const message = describeError(cause);
         patch(module, { error: message, busy: false });
         return { ok: false as const, message };
       }
@@ -190,7 +206,7 @@ export function ReviewPanel({ root }: ReviewPanelProps) {
       try {
         patch(module, { applied: await api.apply(root, module, body), busy: false });
       } catch (cause) {
-        patch(module, { error: cause instanceof Error ? cause.message : String(cause), busy: false });
+        patch(module, { error: describeError(cause), busy: false });
       }
     },
     [root, patch],
@@ -214,9 +230,9 @@ export function ReviewPanel({ root }: ReviewPanelProps) {
   return (
     <div className="flex min-h-0 flex-col">
       <header className="flex flex-wrap items-center gap-1.5 border-b border-border px-3 py-2">
-        <span className="text-[13px] font-semibold">Review before commit</span>
+        <span className="text-[13px] font-semibold">{t('review.title')}</span>
         <label className="ml-1 flex items-center gap-1 text-[11px] text-muted-foreground">
-          base
+          {t('review.base')}
           <input
             value={base}
             onChange={(event) => setBase(event.target.value)}
@@ -227,11 +243,11 @@ export function ReviewPanel({ root }: ReviewPanelProps) {
           />
         </label>
         <Button size="sm" variant="primary" onClick={() => void run()} disabled={busy}>
-          {busy ? 'Checking…' : 'Check changes'}
+          {busy ? t('review.checking') : t('review.check')}
         </Button>
         {result !== null && result.modules.length > 0 ? (
           <Button size="sm" onClick={() => void askAll()} disabled={batch?.running === true}>
-            {batch?.running === true ? `Judging ${batch.done}/${batch.total}…` : 'Judge all'}
+            {batch?.running === true ? t('review.judging', { done: batch.done, total: batch.total }) : t('review.judge-all')}
           </Button>
         ) : null}
       </header>
@@ -259,10 +275,9 @@ export function ReviewPanel({ root }: ReviewPanelProps) {
                   : 'border-warning/60',
               )}
             >
-              <span className="font-medium">{result.verdict}</span>
+              <span className="font-medium">{t(verdictKey(result.verdict))}</span>
               <div className="text-[11px] text-muted-foreground">
-                {result.changedFiles} file(s) changed · {result.modules.length} module(s) involved ·
-                evidence ~{result.estimate.evidenceTokens} tokens
+                {t('review.changed', { files: result.changedFiles, modules: result.modules.length, tokens: result.estimate.evidenceTokens })}
               </div>
             </div>
 
@@ -275,11 +290,11 @@ export function ReviewPanel({ root }: ReviewPanelProps) {
               >
                 <span className="font-medium">
                   {batch.changes > 0
-                    ? `${batch.changes} of ${batch.total} contract(s) need an update`
-                    : `all ${batch.total} contract(s) still hold`}
+                    ? t('review.batch', { changes: batch.changes, total: batch.total })
+                    : t('review.batch-clean', { total: batch.total })}
                 </span>
                 {batch.failures > 0 ? (
-                  <span className="text-muted-foreground"> · {batch.failures} could not be judged</span>
+                  <span className="text-muted-foreground"> · {t('review.batch-failures', { count: batch.failures })}</span>
                 ) : null}
               </div>
             ) : null}
@@ -296,15 +311,14 @@ export function ReviewPanel({ root }: ReviewPanelProps) {
 
             {result.unmatched.length === 0 ? null : (
               <div className="mb-2 rounded-md border border-warning/50 px-2.5 py-1.5 text-[11.5px]">
-                no module owns: {result.unmatched.slice(0, 8).join(', ')}
-                {result.unmatched.length > 8 ? ' …' : ''}
+                {t('review.unmatched', { paths: `${result.unmatched.slice(0, 8).join(', ')}${result.unmatched.length > 8 ? ' …' : ''}` })}
               </div>
             )}
 
             {result.signatureLines.length === 0 ? null : (
               <section className="mt-2">
                 <h3 className="mb-1 text-[11.5px] font-semibold">
-                  New or changed declarations ({result.signatureLines.length})
+                  {t('review.declarations', { count: result.signatureLines.length })}
                 </h3>
                 <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-card p-2 font-mono text-[11px] leading-[1.7]">
                   {result.signatureLines.join('\n')}

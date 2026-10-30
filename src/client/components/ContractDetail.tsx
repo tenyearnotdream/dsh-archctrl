@@ -13,6 +13,8 @@ import { cn } from '../lib/utils.js';
 import { Badge } from './ui/badge.js';
 import { Button } from './ui/button.js';
 import { DriftDot, statusOf } from './ContractTree.js';
+import { t } from '../locale/index.js';
+import { describeError } from '../lib/errors.js';
 
 function Meta({ label, value }: { label: string; value: string }) {
   return (
@@ -61,7 +63,7 @@ export function ContractDetail({ root, state, module, onRead, onClose }: Contrac
         onReadRef.current(module);
       })
       .catch((cause: unknown) => {
-        if (live) setError(cause instanceof Error ? cause.message : String(cause));
+        if (live) setError(describeError(cause));
       });
     return () => {
       live = false;
@@ -69,7 +71,7 @@ export function ContractDetail({ root, state, module, onRead, onClose }: Contrac
   }, [root, module, contractPath]);
 
   if (contract === undefined) {
-    return <div className="p-4 text-xs text-muted-foreground">No contract for this module.</div>;
+    return <div className="p-4 text-xs text-muted-foreground">{t('detail.none')}</div>;
   }
 
   const hint = state.hints.find((h) => h.contract === contract.path);
@@ -85,7 +87,7 @@ export function ContractDetail({ root, state, module, onRead, onClose }: Contrac
         <div className="ml-auto flex items-center gap-1">
           {onClose === undefined ? null : (
             <Button size="sm" variant="ghost" onClick={onClose}>
-              Close
+              {t('detail.close')}
             </Button>
           )}
         </div>
@@ -94,23 +96,23 @@ export function ContractDetail({ root, state, module, onRead, onClose }: Contrac
       <div className="archctrl-scroll px-3 py-2.5">
         <section className="mb-3 grid gap-0.5">
           {contract.lastCommit === null ? null : (
-            <Meta label="updated" value={contract.lastCommit.subject} />
+            <Meta label={t('detail.updated')} value={contract.lastCommit.subject} />
           )}
-          {contract.owns.length === 0 ? null : <Meta label="owns" value={contract.owns.join(', ')} />}
+          {contract.owns.length === 0 ? null : <Meta label={t('detail.owns')} value={contract.owns.join(', ')} />}
           {contract.depends.length === 0 ? null : (
-            <Meta label="depends" value={contract.depends.join(', ')} />
+            <Meta label={t('detail.depends')} value={contract.depends.join(', ')} />
           )}
           {contract.verifies.length === 0 ? null : (
-            <Meta label="verifies" value={contract.verifies.join(', ')} />
+            <Meta label={t('detail.verifies')} value={contract.verifies.join(', ')} />
           )}
         </section>
 
         {hint === undefined ? null : (
           <div className="mb-3 rounded-md border border-warning/50 px-2.5 py-2 text-[11.5px] leading-5">
-            <span className="font-medium text-warning">Lagging</span>
+            <span className="font-medium text-warning">{t('detail.lagging')}</span>
             <span className="text-muted-foreground">
               {' '}
-              — {hint.commits} code commit(s) after this contract was updated.
+              {' '}{t('detail.lagging-note', { count: hint.commits })}
             </span>
           </div>
         )}
@@ -129,9 +131,9 @@ export function ContractDetail({ root, state, module, onRead, onClose }: Contrac
         )}
 
         <section className="mb-3">
-          <h3 className="mb-1 text-[11.5px] font-semibold">Cited paths</h3>
+          <h3 className="mb-1 text-[11.5px] font-semibold">{t('detail.cited-paths')}</h3>
           {contract.refs.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground">This contract cites no repository paths.</p>
+            <p className="text-[11px] text-muted-foreground">{t('detail.no-cited-paths')}</p>
           ) : (
             <ul className="grid gap-0.5">
               {contract.refs.map((ref) => (
@@ -144,11 +146,11 @@ export function ContractDetail({ root, state, module, onRead, onClose }: Contrac
         </section>
 
         <section>
-          <h3 className="mb-1 text-[11.5px] font-semibold">Contract</h3>
+          <h3 className="mb-1 text-[11.5px] font-semibold">{t('detail.contract')}</h3>
           {error !== null ? (
             <p className="text-[11.5px] text-destructive">{error}</p>
           ) : text === null ? (
-            <p className="text-[11.5px] text-muted-foreground">Reading…</p>
+            <p className="text-[11.5px] text-muted-foreground">{t('detail.reading')}</p>
           ) : (
             <pre
               className={cn(
