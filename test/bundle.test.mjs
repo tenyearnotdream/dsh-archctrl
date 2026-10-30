@@ -62,6 +62,17 @@ test('the bundle registers both languages with the Host', () => {
   const { module } = loadBundle();
   const registered = [];
   const bound = [];
+  // `locale` is optional, so it arrives through a soft inject — never off `ctx`.
+  const locale = {
+    register: (namespace, dictionaries) => {
+      registered.push({ namespace, dictionaries });
+      return () => {};
+    },
+    bind: (namespace) => {
+      bound.push(namespace);
+      return (key) => key;
+    },
+  };
   const base = {
     slots: { inject: (_slot, register) => register(), register: () => () => {} },
     effect: (factory) => {
@@ -73,18 +84,8 @@ test('the bundle registers both languages with the Host', () => {
   };
   module.apply({
     ...base,
-    locale: {
-      register: (namespace, dictionaries) => {
-        registered.push({ namespace, dictionaries });
-        return () => {};
-      },
-      bind: (namespace) => {
-        bound.push(namespace);
-        return (key) => key;
-      },
-    },
     inject: (_deps, body) =>
-      body({ ...base, sidebarRightTabs: { register: () => () => {} } }),
+      body({ ...base, locale, sidebarRightTabs: { register: () => () => {} } }),
   });
 
   assert.equal(registered.length, 1);
@@ -113,6 +114,44 @@ test('the bundle still applies without the locale service', () => {
       ...base,
       inject: (_deps, body) => body({ ...base, sidebarRightTabs: { register: () => () => {} } }),
     }),
+  );
+});
+
+test('apply reads no service it did not inject', () => {
+  // cordis throws `cannot get property "<name>" without inject` on an undeclared
+  // service read, which marks the whole plugin failed and takes the page down.
+  // This proxy reproduces that rule so a direct `ctx.locale` cannot come back.
+  const { module } = loadBundle();
+  const guard = (target) =>
+    new Proxy(target, {
+      get(object, key) {
+        if (typeof key === 'string' && !(key in object)) {
+          throw new Error(`cannot get property "${key}" without inject`);
+        }
+        return object[key];
+      },
+    });
+  const base = {
+    slots: { inject: (_slot, register) => register(), register: () => () => {} },
+    effect: (factory) => {
+      const disposer = factory();
+      return typeof disposer === 'function' ? disposer : () => {};
+    },
+    get: () => undefined,
+    on: () => () => {},
+  };
+  const scope = guard({
+    ...base,
+    locale: { register: () => () => {}, bind: () => (key) => key },
+    sidebarRightTabs: { register: () => () => {} },
+  });
+  assert.doesNotThrow(() =>
+    module.apply(
+      guard({
+        ...base,
+        inject: (_deps, body) => body(scope),
+      }),
+    ),
   );
 });
 
@@ -180,10 +219,17 @@ test('the right-rail tab type carries a guide card, or it is unreachable', () =>
     get: () => undefined,
     on: () => () => {},
   };
+  // The rail registry is reached through the scope's `get`, not the service
+  // table: `ctx.inject` resolves the scope, and the registry lives on it.
+  const tabs = {
+    register: (definition) => {
+      tabTypes.push(definition);
+      return () => {};
+    },
+  };
   module.apply({
     ...base,
-    inject: (_deps, body) =>
-      body({ ...base, sidebarRightTabs: { register: (definition) => { tabTypes.push(definition); return () => {}; } } }),
+    inject: (_deps, body) => body({ ...base, get: (name) => (name === 'sidebarRightTabs' ? tabs : undefined) }),
   });
   assert.equal(tabTypes.length, 1);
   assert.equal(tabTypes[0].kind, 'archctrl');

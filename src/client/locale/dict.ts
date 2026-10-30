@@ -13,6 +13,8 @@ export type Dictionary = Record<string, string>;
 
 export const en: Dictionary = {
   'panel.title': 'Architecture',
+  'panel.rail-title': 'Architecture',
+  'panel.rail-description': 'Contracts this conversation has read',
 
   'header.contracts': '{count} contracts · {tokens} tokens',
   'header.errors': '{count} errors',
@@ -114,6 +116,8 @@ export const en: Dictionary = {
 
 export const zh: Dictionary = {
   'panel.title': '架构控制',
+  'panel.rail-title': '架构控制',
+  'panel.rail-description': '本会话已读的架构契约',
 
   'header.contracts': '{count} 份契约 · {tokens} tokens',
   'header.errors': '{count} 个错误',
