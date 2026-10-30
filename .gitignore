@@ -1,4 +1,9 @@
 node_modules/
-dist/
 *.log
 .DS_Store
+
+# `dist/` is committed on purpose. The plugin is installed straight from a git
+# tag (github:<owner>/<repo>#vX.Y.Z), and a git dependency is a source
+# snapshot: nothing runs `npm run build` for the consumer. Shipping the built
+# bundle is what makes a tag installable without a toolchain, and it matches the
+# `files` list in package.json.
