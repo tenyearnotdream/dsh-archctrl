@@ -58,9 +58,12 @@ export function Panel() {
     const detail =
       workspaces.root === ''
         ? workspaces.items.length === 0
-          ? `no workspace could be resolved (registry ${workspaces.source?.registry ?? 0}, sessions ${workspaces.source?.sessions ?? 0})`
-          : 'no workspace selected'
-        : `reading ${workspaces.root}`;
+          ? t('state.no-workspace', {
+              registry: workspaces.source?.registry ?? 0,
+              sessions: workspaces.source?.sessions ?? 0,
+            })
+          : t('state.no-selection')
+        : t('state.reading', { root: workspaces.root });
     return <div className="archctrl-root items-center justify-center p-6 text-xs text-muted-foreground">{detail}</div>;
   }
 

@@ -29,6 +29,12 @@ export function useTree(root: string): TreeLoader {
     if (root === '') return undefined;
     let live = true;
     setLoading(true);
+    // Drop the previous repository's tree the moment the target changes. Keeping
+    // it until the new answer arrives would render one workspace's contracts
+    // under another workspace's selector, which reads as a stale tree rather
+    // than as a load in progress.
+    setState((current) => (current !== null && current.root === root ? current : null));
+    setError(null);
     void api
       .state(root)
       .then((next) => {
