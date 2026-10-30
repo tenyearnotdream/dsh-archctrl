@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-archctrl",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Architecture control for DeepSeek Harness: the .archctrl contract tree as a visual, checkable design layer.",
