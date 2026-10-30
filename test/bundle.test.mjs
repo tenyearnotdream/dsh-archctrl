@@ -1,0 +1,158 @@
+// Verifies the BUILT bundle, not the source.
+//
+// The loader loads plugin bundles as classic scripts (`same-origin external
+// classic script`), so a top-level `import` is a syntax error at load time — a
+// failure that never appears in a source-level test. This file executes the
+// artefact exactly as the browser would: a plain script, then the factory.
+
+import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const bundlePath = join(root, 'dist/client/client.js');
+const hostPath = join(root, 'dist/host/index.js');
+
+const PACKAGE = '@local/dsh-archctrl';
+
+/** Minimal React: enough to mount a component tree without a DOM. */
+const React = {
+  createElement: (type, props, ...children) => ({ type, props: props ?? {}, children }),
+  Fragment: 'Fragment',
+  useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
+  useEffect: () => {},
+  useCallback: (fn) => fn,
+  useMemo: (fn) => fn(),
+  useRef: (value) => ({ current: value }),
+};
+const JSX = { jsx: React.createElement, jsxs: React.createElement, Fragment: 'Fragment' };
+
+const provide = (name) =>
+  name === 'react' ? React : name === 'react/jsx-runtime' ? JSX : React;
+
+/** Execute the bundle the way the browser does, and return the module. */
+function loadBundle() {
+  const source = readFileSync(bundlePath, 'utf8');
+  let captured;
+  const styles = [];
+  const document = {
+    createElement: () => ({ id: '', textContent: '', remove() {} }),
+    head: { appendChild: (node) => styles.push(node) },
+    getElementById: () => null,
+  };
+  const window = { __ModuleLoader__: { load: (module) => { captured = module; } } };
+
+  // A classic script: `new Function` has the same restriction as <script>, so a
+  // top-level `import` would throw here just as it would in the browser.
+  new Function('window', 'document', source)(window, document);
+  assert.equal(captured.id, PACKAGE);
+  return { module: captured.factory(provide), styles };
+}
+
+test('the built bundle exists', () => {
+  assert.ok(existsSync(bundlePath), 'run `npm run build:client` first');
+  assert.ok(existsSync(hostPath), 'run `npm run build:host` first');
+});
+
+test('the bundle is a classic script, not an ES module', () => {
+  const source = readFileSync(bundlePath, 'utf8');
+  // The loader appends a plain <script>; a top-level import would fail to parse.
+  assert.equal(/^\s*import[\s{*]/m.test(source), false, 'top-level import found');
+  assert.equal(/^\s*export[\s{*]/m.test(source), false, 'top-level export found');
+});
+
+test('the bundle registers under the package name and exports apply', () => {
+  const { module } = loadBundle();
+  assert.deepEqual(Object.keys(module).sort(), ['apply', 'inject']);
+  assert.deepEqual(module.inject, ['slots']);
+  assert.equal(typeof module.apply, 'function');
+});
+
+test('applying registers every slot the plugin ships', () => {
+  const { module } = loadBundle();
+  const slots = [];
+  const tabTypes = [];
+  const base = {
+    slots: {
+      inject: (_slot, register) => register(),
+      register: (options, component) => {
+        slots.push({ slot: options.name, id: options.id ?? options.key, component });
+        return () => {};
+      },
+    },
+    effect: (factory) => {
+      const disposer = factory();
+      return typeof disposer === 'function' ? disposer : () => {};
+    },
+    get: () => undefined,
+    on: () => () => {},
+  };
+  module.apply({
+    ...base,
+    inject: (_deps, body) =>
+      body({ ...base, sidebarRightTabs: { register: (definition) => { tabTypes.push(definition); return () => {}; } } }),
+  });
+
+  assert.deepEqual(
+    slots.map((entry) => [entry.slot, entry.id]),
+    [
+      ['sidebar.panellist', 'archctrl'],
+      ['conversation.composer.dock', 'archctrl-reads'],
+      ['main', 'archctrl'],
+      ['sidebar.right.pane.tab', 'archctrl'],
+      ['sidebar.right.pane.tab.title', 'archctrl'],
+    ],
+  );
+  for (const entry of slots) assert.equal(typeof entry.component, 'function');
+});
+
+test('the right-rail tab type carries a guide card, or it is unreachable', () => {
+  const { module } = loadBundle();
+  const tabTypes = [];
+  const base = {
+    slots: { inject: (_s, r) => r(), register: () => () => {} },
+    effect: (factory) => {
+      const disposer = factory();
+      return typeof disposer === 'function' ? disposer : () => {};
+    },
+    get: () => undefined,
+    on: () => () => {},
+  };
+  module.apply({
+    ...base,
+    inject: (_deps, body) =>
+      body({ ...base, sidebarRightTabs: { register: (definition) => { tabTypes.push(definition); return () => {}; } } }),
+  });
+  assert.equal(tabTypes.length, 1);
+  assert.equal(tabTypes[0].kind, 'archctrl');
+  assert.ok(Array.isArray(tabTypes[0].guide) && tabTypes[0].guide.length > 0);
+});
+
+test('the bundle carries its stylesheet inside the single JS file', () => {
+  // The loader fetches one URL, so a separate CSS asset would never be applied.
+  // Vite inlines it at the top of the IIFE; this asserts it is present and it is
+  // genuinely Tailwind output, not an empty placeholder.
+  const source = readFileSync(bundlePath, 'utf8');
+  const styles = [];
+  const document = {
+    createElement: () => ({ id: '', textContent: '', remove() {} }),
+    head: { appendChild: (node) => styles.push(node) },
+    getElementById: () => null,
+  };
+  let factory;
+  const window = { __ModuleLoader__: { load: (module) => { factory = module.factory; } } };
+  new Function('window', 'document', source)(window, document);
+
+  // The stylesheet is part of the factory body, so it appears when the loader
+  // materializes the module — which is exactly when the plugin goes live.
+  assert.equal(styles.length, 0, 'nothing runs before materialization');
+  factory(provide);
+
+  assert.equal(styles.length, 1, 'exactly one stylesheet is injected');
+  const css = styles[0].textContent;
+  assert.ok(css.length > 4000, `stylesheet looks truncated: ${css.length} bytes`);
+  assert.match(css, /dsw-alias-bg-base|--color-background/, 'theme tokens are missing');
+  assert.match(css, /archctrl-root/, 'the plugin\'s own class is missing');
+});

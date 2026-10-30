@@ -1,0 +1,51 @@
+@import 'tailwindcss';
+
+/*
+ * Every colour comes from a --dsw-alias-* token so the plugin follows the Host's
+ * theme. `@theme` maps them to Tailwind utilities, which is why the components
+ * can write `bg-card` / `text-muted-foreground` instead of hard-coded hex.
+ */
+@theme inline {
+  --color-background: var(--dsw-alias-bg-base);
+  --color-foreground: var(--dsw-alias-label-primary);
+  --color-card: var(--dsw-alias-bg-layer-1);
+  --color-card-foreground: var(--dsw-alias-label-primary);
+  --color-popover: var(--dsw-alias-bg-overlay);
+  --color-muted: var(--dsw-alias-bg-layer-2);
+  --color-muted-foreground: var(--dsw-alias-label-secondary);
+  --color-border: var(--dsw-alias-border-l1);
+  --color-border-strong: var(--dsw-alias-border-l2);
+  --color-primary: var(--dsw-alias-brand-primary);
+  --color-primary-foreground: var(--dsw-alias-bg-base);
+  --color-destructive: var(--dsw-alias-state-error-primary);
+  --color-warning: var(--dsw-alias-state-warn-primary);
+  --color-success: var(--dsw-alias-state-success-primary);
+  --color-idle: var(--dsw-alias-state-idle-primary);
+  --radius-card: 8px;
+}
+
+/* The Host renders plugin panels inside its own scroll containers. */
+.archctrl-root {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-size: 13px;
+}
+
+/* A scrollbar that does not fight the Host's chrome. */
+.archctrl-scroll {
+  overflow: auto;
+  scrollbar-width: thin;
+}
+.archctrl-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.archctrl-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 999px;
+}

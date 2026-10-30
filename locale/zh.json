@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "架构控制",
+    "description": "读取仓库的 .archctrl 契约树：常量 token 的提示词索引、arch_impact/arch_contract 工具、确定性漂移检查，以及可视化的契约树面板。"
+  }
+}

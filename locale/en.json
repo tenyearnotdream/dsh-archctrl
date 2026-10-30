@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Architecture Control",
+    "description": "Reads the repository's .archctrl contract tree: constant-token prompt index, arch_impact/arch_contract tools, deterministic drift checks, and a visual tree panel."
+  }
+}

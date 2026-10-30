@@ -1,0 +1,3 @@
+- insert:
+    - id: archctrl
+      name: '@local/dsh-archctrl'
