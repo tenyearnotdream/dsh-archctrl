@@ -6,10 +6,13 @@
  * rail cannot disagree about what exists.
  */
 
-import { useCallback, useState } from 'react';
+import { useCallback, useState, type ReactNode } from 'react';
 
+import type { WorkspaceLoader } from '../composables/useWorkspaces.js';
 import { useTree } from '../composables/useTree.js';
 import { useWorkspaces } from '../composables/useWorkspaces.js';
+import { ApiError } from '../lib/api.js';
+import { describeError } from '../lib/errors.js';
 import { cn } from '../lib/utils.js';
 import { ActiveStrip } from './ActiveStrip.js';
 import { ContractDetail } from './ContractDetail.js';
@@ -36,6 +39,92 @@ function useReadingLog(): { read: ReadonlySet<string>; note: (module: string | n
   return { read, note };
 }
 
+/**
+ * The repository chooser.
+ *
+ * It has to survive a repository with no contracts: that refusal is one of the
+ * states the panel can be in, and a reader stranded there with no selector
+ * cannot get back to the tree of a repository that does have one.
+ */
+function RepositoryPicker({ loader }: { loader: WorkspaceLoader }) {
+  if (loader.items.length <= 1) {
+    return <span className="truncate text-[11px] text-muted-foreground">{loader.root}</span>;
+  }
+  return (
+    <select
+      value={loader.root}
+      onChange={(event) => loader.select(event.target.value)}
+      className="h-6 max-w-72 rounded border border-border-strong bg-card px-1.5 text-[11px] text-foreground outline-none focus:border-primary"
+      title={t('header.repository')}
+    >
+      {loader.items.map((item) => (
+        <option key={item.id} value={item.path}>
+          {item.title} — {item.path}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/** A whole-panel state that is not a tree: reading, empty, refused. */
+function StateScreen({
+  loader,
+  message,
+  tone = 'muted',
+  actions,
+}: {
+  loader: WorkspaceLoader;
+  message: string;
+  tone?: 'muted' | 'danger';
+  actions?: ReactNode;
+}) {
+  return (
+    <div className="archctrl-root">
+      <header className="flex flex-wrap items-center gap-1.5 border-b border-border px-3 py-2">
+        <span className="text-[13px] font-semibold">{t('panel.title')}</span>
+        <RepositoryPicker loader={loader} />
+      </header>
+      <div
+        className={cn(
+          'flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-6 text-center text-xs',
+          tone === 'danger' ? 'text-destructive' : 'text-muted-foreground',
+        )}
+      >
+        <p className="max-w-96 break-words">{message}</p>
+        {actions === undefined ? null : <div className="flex items-center gap-1">{actions}</div>}
+      </div>
+    </div>
+  );
+}
+
+/** Onboarding, for a repository that has no tree yet. */
+function SetupScreen({
+  loader,
+  onDone,
+  onClose,
+}: {
+  loader: WorkspaceLoader;
+  onDone: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="archctrl-root">
+      <header className="flex flex-wrap items-center gap-1.5 border-b border-border px-3 py-2">
+        <span className="text-[13px] font-semibold">{t('onboard.title')}</span>
+        <RepositoryPicker loader={loader} />
+        <div className="ml-auto flex items-center gap-1">
+          <Button size="sm" onClick={onClose}>
+            {t('detail.close')}
+          </Button>
+        </div>
+      </header>
+      <div className="archctrl-scroll min-h-0 flex-1">
+        <Onboarding key={loader.root} root={loader.root} onDone={onDone} />
+      </div>
+    </div>
+  );
+}
+
 export function Panel() {
   const workspaces = useWorkspaces();
   const tree = useTree(workspaces.root);
@@ -46,15 +135,60 @@ export function Panel() {
   // which is a real document like any other. Using a string such as 'overview'
   // would collide with a module named that and hide the root contract.
   const [selected, setSelected] = useState<string | null | undefined>(undefined);
+  // A repository with no `.archctrl` has no tree to render, and that is exactly
+  // the repository onboarding exists for. The flag keeps the flow open while it
+  // runs; the refusal itself clears on the next read.
+  const [setup, setSetup] = useState(false);
 
   if (workspaces.error !== null && tree.state === null) {
     return (
-      <div className="archctrl-root items-center justify-center p-6 text-xs text-destructive">
-        archctrl: {workspaces.error}
-      </div>
+      <StateScreen
+        loader={workspaces}
+        tone="danger"
+        message={t('state.error', { message: workspaces.error })}
+      />
     );
   }
+
   if (tree.state === null) {
+    if (tree.error !== null) {
+      const missing = tree.error instanceof ApiError && tree.error.code === 'no-archctrl';
+      if (missing && setup) {
+        return (
+          <SetupScreen
+            loader={workspaces}
+            onClose={() => setSetup(false)}
+            onDone={() => {
+              setSetup(false);
+              tree.reload();
+            }}
+          />
+        );
+      }
+      // The refusal is an answer, not a pending read. Without this branch the
+      // panel says "Reading <root>…" forever, because a failed read leaves no
+      // tree behind.
+      return (
+        <StateScreen
+          loader={workspaces}
+          tone="danger"
+          message={t('state.error', { message: describeError(tree.error) })}
+          actions={
+            <>
+              {missing ? (
+                <Button size="sm" variant="primary" onClick={() => setSetup(true)}>
+                  {t('onboard.title')}
+                </Button>
+              ) : null}
+              <Button size="sm" onClick={tree.reload} disabled={tree.loading}>
+                {tree.loading ? t('header.refreshing') : t('header.refresh')}
+              </Button>
+            </>
+          }
+        />
+      );
+    }
+
     const detail =
       workspaces.root === ''
         ? workspaces.items.length === 0
@@ -64,7 +198,7 @@ export function Panel() {
             })
           : t('state.no-selection')
         : t('state.reading', { root: workspaces.root });
-    return <div className="archctrl-root items-center justify-center p-6 text-xs text-muted-foreground">{detail}</div>;
+    return <StateScreen loader={workspaces} message={detail} />;
   }
 
   const state = tree.state;
@@ -78,22 +212,7 @@ export function Panel() {
       <header className="flex flex-wrap items-center gap-1.5 border-b border-border px-3 py-2">
         <span className="text-[13px] font-semibold">{t('panel.title')}</span>
 
-        {workspaces.items.length > 1 ? (
-          <select
-            value={workspaces.root}
-            onChange={(event) => workspaces.select(event.target.value)}
-            className="h-6 max-w-72 rounded border border-border-strong bg-card px-1.5 text-[11px] text-foreground outline-none focus:border-primary"
-            title="Repository to read contracts from"
-          >
-            {workspaces.items.map((item) => (
-              <option key={item.id} value={item.path}>
-                {item.title} — {item.path}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <span className="truncate text-[11px] text-muted-foreground">{state.root}</span>
-        )}
+        <RepositoryPicker loader={workspaces} />
 
         <span className="text-[11px] tabular-nums text-muted-foreground">
           {t('header.contracts', { count: state.totals.contracts, tokens: state.totals.tokens })}
@@ -121,6 +240,7 @@ export function Panel() {
       {mode === 'onboard' ? (
         <div className="archctrl-scroll min-h-0 flex-1">
           <Onboarding
+            key={workspaces.root}
             root={workspaces.root}
             onDone={() => {
               tree.reload();

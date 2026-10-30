@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import type { ActiveAnswer } from '../../shared/contracts.js';
 import { api } from '../lib/api.js';
+import { describeError } from '../lib/errors.js';
 import { useTree } from '../composables/useTree.js';
 import { useWorkspaces } from '../composables/useWorkspaces.js';
 import { ContractDetail } from './ContractDetail.js';
@@ -43,12 +44,25 @@ export function RightTab() {
   }, [refreshRead]);
 
   if (workspaces.error !== null && tree.state === null) {
-    return <div className="archctrl-root p-3 text-xs text-destructive">archctrl: {workspaces.error}</div>;
+    return (
+      <div className="archctrl-root p-3 text-xs text-destructive">
+        {t('state.error', { message: workspaces.error })}
+      </div>
+    );
   }
   if (tree.state === null) {
+    // A failed read is a settled answer. Calling it "reading" hides the reason
+    // the rail is empty and leaves it empty forever.
+    if (tree.error !== null) {
+      return (
+        <div className="archctrl-root p-3 text-xs text-destructive">
+          {t('state.error', { message: describeError(tree.error) })}
+        </div>
+      );
+    }
     return (
       <div className="archctrl-root p-3 text-xs text-muted-foreground">
-        {workspaces.root === '' ? 'no workspace with .archctrl contracts' : `reading ${workspaces.root}`}
+        {workspaces.root === '' ? t('state.no-contracts') : t('state.reading', { root: workspaces.root })}
       </div>
     );
   }

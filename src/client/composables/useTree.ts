@@ -12,14 +12,20 @@ import { api } from '../lib/api.js';
 
 export interface TreeLoader {
   readonly state: TreeState | null;
-  readonly error: string | null;
+  /**
+   * The failure itself, not just its text: the Host's stable codes are what the
+   * panel translates and branches on, and flattening them to a string here
+   * made "this repository has no contracts" indistinguishable from any other
+   * refusal.
+   */
+  readonly error: Error | null;
   readonly loading: boolean;
   reload(): void;
 }
 
 export function useTree(root: string): TreeLoader {
   const [state, setState] = useState<TreeState | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(false);
   const [tick, setTick] = useState(0);
 
@@ -44,7 +50,7 @@ export function useTree(root: string): TreeLoader {
       })
       .catch((cause: unknown) => {
         if (!live) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
+        setError(cause instanceof Error ? cause : new Error(String(cause)));
       })
       .finally(() => {
         if (live) setLoading(false);
