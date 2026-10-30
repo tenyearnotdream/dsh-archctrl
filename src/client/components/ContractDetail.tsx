@@ -5,7 +5,7 @@
  * documents in one payload would move ~36 KB to render one at a time.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import type { ContractRecord, TreeState } from '../../shared/contracts.js';
 import { api } from '../lib/api.js';
@@ -36,8 +36,20 @@ export function ContractDetail({ root, state, module, onRead, onClose }: Contrac
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // The read notice goes through a ref. A caller almost always passes an inline
+  // arrow, which is a new identity on every render; putting it in the dependency
+  // list would re-run this effect forever — re-fetching the body, resetting it to
+  // null, and bumping the reading counter on every cycle.
+  const onReadRef = useRef(onRead);
+  onReadRef.current = onRead;
+
+  // The repository and the module are the whole identity of this request. The
+  // contract object is derived from the tree and changes on every refresh, so
+  // depending on it would refetch a body that has not changed.
+  const contractPath = contract?.path;
+
   useEffect(() => {
-    if (contract === undefined) return undefined;
+    if (contractPath === undefined) return undefined;
     let live = true;
     setText(null);
     setError(null);
@@ -45,9 +57,8 @@ export function ContractDetail({ root, state, module, onRead, onClose }: Contrac
       .contract(root, module)
       .then((answer) => {
         if (!live) return;
-        const value = answer as { text: string };
-        setText(value.text);
-        onRead(module);
+        setText((answer as { text: string }).text);
+        onReadRef.current(module);
       })
       .catch((cause: unknown) => {
         if (live) setError(cause instanceof Error ? cause.message : String(cause));
@@ -55,7 +66,7 @@ export function ContractDetail({ root, state, module, onRead, onClose }: Contrac
     return () => {
       live = false;
     };
-  }, [root, module, contract, onRead]);
+  }, [root, module, contractPath]);
 
   if (contract === undefined) {
     return <div className="p-4 text-xs text-muted-foreground">No contract for this module.</div>;

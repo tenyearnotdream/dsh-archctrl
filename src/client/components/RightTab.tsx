@@ -89,14 +89,18 @@ export function RightTab() {
       </div>
 
       <div className="archctrl-scroll min-h-0 flex-1">
-        {selected === undefined || selected === null ? (
+        {selected === undefined ? (
           <Overview state={state} />
         ) : (
           <ContractDetail
             root={workspaces.root}
             state={state}
             module={selected}
-            onRead={(module) => setRead((current) => new Set(current).add(String(module)))}
+            onRead={(module) =>
+              setRead((current) =>
+                current.has(String(module)) ? current : new Set(current).add(String(module)),
+              )
+            }
             onClose={() => setSelected(undefined)}
           />
         )}

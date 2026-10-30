@@ -27,7 +27,9 @@ type Scope = 'active' | 'all';
 function useReadingLog(): { read: ReadonlySet<string>; note: (module: string | null) => void } {
   const [read, setRead] = useState<Set<string>>(new Set());
   const note = useCallback((module: string | null) => {
-    setRead((current) => new Set(current).add(String(module)));
+    // Returning the same Set when the entry is already present keeps React from
+    // re-rendering: an identity change with identical content is still a change.
+    setRead((current) => (current.has(String(module)) ? current : new Set(current).add(String(module))));
   }, []);
   return { read, note };
 }
@@ -38,7 +40,10 @@ export function Panel() {
   const reading = useReadingLog();
   const [mode, setMode] = useState<Mode>('tree');
   const [scope, setScope] = useState<Scope>('all');
-  const [selected, setSelected] = useState<string | null | undefined>('overview');
+  // `undefined` means "nothing selected" (Overview); `null` is the root index,
+  // which is a real document like any other. Using a string such as 'overview'
+  // would collide with a module named that and hide the root contract.
+  const [selected, setSelected] = useState<string | null | undefined>(undefined);
 
   if (workspaces.error !== null && tree.state === null) {
     return (
@@ -138,7 +143,7 @@ export function Panel() {
 
           <main className="flex min-w-0 flex-1 flex-col">
             <div className={cn('min-h-0 flex-1 overflow-auto')}>
-              {selected === 'overview' || selected === undefined ? (
+              {selected === undefined ? (
                 <Overview state={state} />
               ) : (
                 <ContractDetail
@@ -146,7 +151,7 @@ export function Panel() {
                   state={state}
                   module={selected}
                   onRead={reading.note}
-                  onClose={() => setSelected('overview')}
+                  onClose={() => setSelected(undefined)}
                 />
               )}
             </div>
