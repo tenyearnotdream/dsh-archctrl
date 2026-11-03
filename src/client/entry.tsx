@@ -91,11 +91,13 @@ export function apply(ctx: SlotContext): void {
     ),
   );
 
-  // The check button and the read strip share the dock. The button comes first
-  // because it is the action; the strip is passive context.
-  ctx.slots.inject('conversation.composer.dock', () =>
+  // The check button sits left of the submit control, in the tool row, not in
+  // the dock below it. The dock is a quiet line where a ghost button reads as
+  // another statistic; the tool row is where a session-ending action is looked
+  // for, which is exactly when this gets clicked.
+  ctx.slots.inject('conversation.input.right', () =>
     ctx.slots.register(
-      { name: 'conversation.composer.dock', id: 'archctrl-check', order: 39 },
+      { name: 'conversation.input.right', id: 'archctrl-check', order: 40 },
       ArchCheckButton,
     ),
   );

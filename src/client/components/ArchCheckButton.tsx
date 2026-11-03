@@ -77,7 +77,10 @@ export function ArchCheckButton({ inputActions, sessionId = '' }: ArchCheckButto
   return (
     <Button
       size="sm"
-      variant="ghost"
+      // `secondary` rather than `ghost`: in the tool row a borderless button
+      // disappears among the statistics, and this one has to be found at the end
+      // of a session rather than hunted for.
+      variant="secondary"
       // `key` resets `sent` when the operator switches Session, so a stale
       // "已发送" never follows them into an unrelated conversation.
       key={sessionId}
@@ -85,7 +88,27 @@ export function ArchCheckButton({ inputActions, sessionId = '' }: ArchCheckButto
       title={t('check.title')}
       onClick={run}
     >
+      <ShieldIcon />
       {label}
     </Button>
+  );
+}
+
+/** A shield, the smallest mark that reads as "check the rules". */
+function ShieldIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3 w-3"
+    >
+      <path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z" />
+      <path d="M9 12l2 2 4-4" />
+    </svg>
   );
 }
