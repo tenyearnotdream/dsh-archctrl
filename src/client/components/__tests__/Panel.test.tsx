@@ -5,8 +5,11 @@
  * pending read. Two failures lived here: the refusal was rendered as "Reading
  * <root>…" forever, and the screen it left behind dropped the repository
  * selector, so a reader who chose a contract-less repository could not choose
- * another one without reloading. Onboarding, which exists for exactly this
- * case, was unreachable behind both.
+ * another one without reloading.
+ *
+ * The panel no longer offers to scaffold or repair a tree. Those buttons wrote
+ * architecture documents from citation heuristics; a contract change is now a
+ * conversation decision, triggered from the composer instead.
  */
 
 import { render, screen, waitFor } from '@testing-library/react';
@@ -64,23 +67,24 @@ afterEach(() => {
 });
 
 describe('Panel without a contract tree', () => {
-  it('reports the refusal instead of reading forever', async () => {
+  it('explains the missing tree instead of reading forever', async () => {
     render(<Panel />);
 
-    expect(await screen.findByText('archctrl: This repository has no .archctrl directory.')).toBeTruthy();
+    // The screen states what is missing and who should fix it, and never leaves
+    // the panel claiming to be mid-read.
+    expect(await screen.findByText(/has no \.archctrl contract tree/)).toBeTruthy();
     expect(screen.queryByText('Reading /home/yaods/ai…')).toBeNull();
   });
 
-  it('keeps onboarding reachable for the contract-less repository', async () => {
-    const user = userEvent.setup();
+  it('offers no button that writes contracts', async () => {
     render(<Panel />);
 
-    await user.click(await screen.findByRole('button', { name: 'Set up contracts' }));
-    await user.click(await screen.findByRole('button', { name: 'Scan repository' }));
-
-    // The diagnosis answers "empty", which is the flow's own wording, not the
-    // refusal prefixed by "archctrl:".
-    expect(await screen.findByText('This repository has no .archctrl directory.')).toBeTruthy();
+    await screen.findByText(/has no \.archctrl contract tree/);
+    // The write triggers moved to the conversation; the panel must not keep a
+    // shortcut that edits documents from UI state.
+    for (const name of ['Set up contracts', 'Scan repository', 'Propose scope', 'Create a scaffold']) {
+      expect(screen.queryByRole('button', { name })).toBeNull();
+    }
   });
 
   it('keeps the repository selector usable after the refusal', async () => {
@@ -91,10 +95,15 @@ describe('Panel without a contract tree', () => {
     const user = userEvent.setup();
     render(<Panel />);
 
+    // Wait for the refusal screen first: the picker only exists once the read
+    // answered, and switching before that lands on the previous render.
+    await screen.findByText(/has no \.archctrl contract tree/);
     const select = (await screen.findByRole('combobox')) as HTMLSelectElement;
     expect(select.value).toBe('/home/yaods/a');
 
     await user.selectOptions(select, '/home/yaods/b');
-    await waitFor(() => expect(stateCalls).toContain('/home/yaods/b'));
+    // The switch issues the read itself; the panel renders the missing-tree
+    // screen from a branch, so waiting on the effect alone would race it.
+    await waitFor(() => expect(stateCalls).toContain('/home/yaods/b'), { timeout: 3000 });
   });
 });

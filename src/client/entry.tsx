@@ -11,6 +11,7 @@ import './index.css';
 import type { ReactNode } from 'react';
 
 import { ActiveStrip } from './components/ActiveStrip.js';
+import { ArchCheckButton } from './components/ArchCheckButton.js';
 import { en, zh } from './locale/dict.js';
 import { makeTranslate, setTranslate, t } from './locale/index.js';
 import { Panel } from './components/Panel.js';
@@ -87,6 +88,15 @@ export function apply(ctx: SlotContext): void {
         label: () => t('panel.title'),
       },
       TreeIcon,
+    ),
+  );
+
+  // The check button and the read strip share the dock. The button comes first
+  // because it is the action; the strip is passive context.
+  ctx.slots.inject('conversation.composer.dock', () =>
+    ctx.slots.register(
+      { name: 'conversation.composer.dock', id: 'archctrl-check', order: 39 },
+      ArchCheckButton,
     ),
   );
 

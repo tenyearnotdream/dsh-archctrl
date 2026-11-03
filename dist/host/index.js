@@ -459,12 +459,365 @@ function reviewChanges(tree, base) {
 }
 
 // src/host/routes.ts
-import { mkdirSync, readFileSync as readFileSync4, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname as dirname3, join as join5 } from "node:path";
+import { readFileSync as readFileSync3 } from "node:fs";
+import { join as join4 } from "node:path";
+
+// src/host/judge.ts
+import { readFileSync as readFileSync2, writeFileSync } from "node:fs";
+import { join as join3 } from "node:path";
+var JUDGE_INSTRUCTIONS = `You review whether an architecture contract still describes the code.
+
+You are given: one contract document, the diff summary of the files it governs,
+and the declarations added or changed in them.
+
+Report a change ONLY when all three hold:
+1. The diff touches a rule the contract states explicitly, not merely "code was added".
+2. That rule is now false, incomplete, or requires a new exception.
+3. You can quote the contract line that must change.
+
+Otherwise answer {"change": false, "reason": "..."} and say why the contract still
+holds. Do not propose edits to record that work happened: a contract is a set of
+decisions, not a changelog. Never propose adding a rule the code does not already
+obey, and never restate what the diff did. If a rule is merely worth rewording,
+that is not a change.
+
+When a change is required, return the COMPLETE new document body (not a patch),
+keeping every unaffected line byte-identical, and list the single contract line
+your change is based on.`;
+function evidenceFor(tree, contract, base) {
+  const range = `${base}...HEAD`;
+  const read = (args) => git(tree.root, args) ?? "";
+  const owned = contract.owns.length > 0 ? contract.owns : [".archctrl"];
+  const lines = [
+    read(["diff", "--stat", range, "--", ...owned]),
+    read(["diff", "--stat", "HEAD", "--", ...owned]),
+    read(["diff", "-U0", range, "--", ...owned]).split("\n").filter((line) => /^\+\s*(func|type|export|interface|class)\b/.test(line)).slice(0, 40).join("\n")
+  ];
+  return lines.join("\n").trim();
+}
+function judgePrompt(tree, contract, evidence) {
+  const full = readFileSync2(join3(tree.root, contract.path), "utf8");
+  const { body } = splitDocument(full);
+  return [
+    `Contract: ${contract.path}`,
+    `Module: ${contract.module ?? "(root)"}`,
+    `Governs: ${contract.owns.join(", ") || "(nothing declared)"}`,
+    "",
+    "=== CONTRACT (current) ===",
+    body.trim(),
+    "",
+    "=== DIFF SUMMARY OF THE GOVERNED FILES ===",
+    evidence.trim() || "(no diff)"
+  ].join("\n");
+}
+function parseAnswer(text) {
+  const trimmed = text.trim();
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start < 0 || end <= start) {
+    throw new Error(`model did not answer with JSON: ${trimmed.slice(0, 200)}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed.slice(start, end + 1));
+  } catch (error) {
+    throw new Error(`model answer is not valid JSON`, { cause: error });
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("model answer is not an object");
+  }
+  const record = parsed;
+  if (typeof record.change !== "boolean") {
+    throw new Error('model answer has no boolean "change"');
+  }
+  return {
+    change: record.change,
+    reason: typeof record.reason === "string" ? record.reason : "",
+    basis: typeof record.basis === "string" ? record.basis : "",
+    ...typeof record.body === "string" ? { body: record.body } : {}
+  };
+}
+async function judgeContract(llm, callConfig, tree, contract, base, signal) {
+  const prompt = judgePrompt(tree, contract, evidenceFor(tree, contract, base));
+  const prepared = await llm.prepareCall(callConfig, signal);
+  let text = "";
+  for await (const chunk of prepared.stream({
+    provider: prepared.config.provider,
+    model: prepared.config.model,
+    messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+    system: JUDGE_INSTRUCTIONS,
+    signal
+  })) {
+    if (chunk.type === "text-delta" && typeof chunk.text === "string") text += chunk.text;
+  }
+  const answer = parseAnswer(text);
+  return {
+    module: String(contract.module),
+    contract: contract.contract,
+    change: answer.change,
+    reason: answer.reason,
+    basis: answer.basis,
+    ...answer.body === void 0 ? {} : { body: answer.body }
+  };
+}
+function applyContract(tree, contract, body) {
+  const full = join3(tree.root, contract.path);
+  const current = readFileSync2(full, "utf8");
+  const { frontmatter } = splitDocument(current);
+  const normalized = body.endsWith("\n") ? body : `${body}
+`;
+  writeFileSync(full, frontmatter + normalized, "utf8");
+  if (git(tree.root, ["add", "--", contract.path]) === null) {
+    throw new Error(`git add failed for ${contract.path}`);
+  }
+  const message = `docs(archctrl): update ${contract.module ?? "root"} contract`;
+  if (git(tree.root, ["commit", "-m", message, "--", contract.path]) === null) {
+    throw new Error("git commit failed; the file was written but not committed");
+  }
+  const hash = git(tree.root, ["rev-parse", "--short", "HEAD"]) ?? "";
+  return { path: contract.path, commit: hash, message };
+}
+var OWNERSHIP_INSTRUCTIONS = `You assign code paths to architecture contracts.
+
+For each path, choose the ONE contract that decides how that code must be built
+or changed. A contract that merely mentions a path is not its owner: a startup
+file is mentioned by every module but is governed by the one that defines
+startup order.
+
+Rules:
+1. Exactly one contract per path. If none decides it, answer "none".
+2. Prefer the narrowest contract that states a rule about the path.
+3. Test and generated files belong to the contract that owns the code they
+   verify or generate.
+4. Answer only the JSON asked for. Never invent a contract name.`;
+async function resolveOwnership(llm, callConfig, questions, signal) {
+  if (questions.length === 0) return [];
+  const prompt = [
+    "Resolve ownership for these paths.",
+    "",
+    ...questions.map(
+      (q) => [
+        `PATH: ${q.path}`,
+        ...q.candidates.map((c) => `  - ${c.module}: ${c.title}
+    ${c.excerpt}`)
+      ].join("\n")
+    ),
+    "",
+    "Answer with JSON only:",
+    '{"answers":[{"path":"...","module":"<module or null>","because":"<one clause>"}]}'
+  ].join("\n");
+  const prepared = await llm.prepareCall(callConfig, signal);
+  let text = "";
+  for await (const chunk of prepared.stream({
+    provider: prepared.config.provider,
+    model: prepared.config.model,
+    messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+    system: OWNERSHIP_INSTRUCTIONS,
+    signal
+  })) {
+    if (chunk.type === "text-delta" && typeof chunk.text === "string") text += chunk.text;
+  }
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) throw new Error("ownership answer is not JSON");
+  const parsed = JSON.parse(text.slice(start, end + 1));
+  const answers = parsed.answers;
+  if (!Array.isArray(answers)) throw new Error('ownership answer has no "answers" array');
+  return answers.filter((entry) => typeof entry === "object" && entry !== null).map((entry) => ({
+    path: typeof entry.path === "string" ? entry.path : "",
+    module: typeof entry.module === "string" && entry.module !== "" && entry.module !== "none" ? entry.module : null,
+    because: typeof entry.because === "string" ? entry.because : ""
+  })).filter((answer) => answer.path !== "");
+}
+
+// src/host/routes.ts
+var ROUTES = {
+  state: "/api/archctrl/state",
+  check: "/api/archctrl/check",
+  contract: "/api/archctrl/contract",
+  review: "/api/archctrl/review",
+  propose: "/api/archctrl/propose",
+  judge: "/api/archctrl/judge",
+  workspaces: "/api/archctrl/workspaces",
+  active: "/api/archctrl/active"
+};
+var json = (value, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store" } });
+var ok = (value) => json({ ok: true, value });
+var fail = (code, message) => json({ ok: false, error: { code, message } });
+async function readBody(request) {
+  if (request.method !== "POST") return {};
+  try {
+    const parsed = await request.json();
+    return typeof parsed === "object" && parsed !== null ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+function createRoutes(services) {
+  const requireTree = (root) => root === void 0 ? null : readTree(root);
+  return {
+    [ROUTES.workspaces]: async () => {
+      const collected = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const workspace of services.workspaces?.() ?? []) {
+        if (seen.has(workspace.path)) continue;
+        seen.add(workspace.path);
+        collected.push(workspace);
+      }
+      const registryCount = collected.length;
+      for (const directory of services.sessionDirectories?.() ?? []) {
+        if (seen.has(directory)) continue;
+        seen.add(directory);
+        collected.push({
+          id: directory,
+          title: directory.split("/").filter(Boolean).pop() ?? directory,
+          path: directory,
+          hasContracts: false,
+          source: "session"
+        });
+      }
+      if (collected.length === 0) {
+        const host = services.hostDirectory?.();
+        if (host !== void 0 && host !== "") {
+          collected.push({
+            id: host,
+            title: host.split("/").filter(Boolean).pop() ?? host,
+            path: host,
+            hasContracts: false,
+            source: "host"
+          });
+        }
+      }
+      return ok({
+        items: collected,
+        source: { registry: registryCount, sessions: collected.length - registryCount }
+      });
+    },
+    [ROUTES.state]: async (request) => {
+      const root = services.resolveRoot(request, await readBody(request));
+      if (root === void 0) return fail("no-root", "no working directory");
+      const tree = requireTree(root);
+      if (tree === null) return fail("no-archctrl", `.archctrl was not found under ${root}`);
+      const checked = checkTree(tree);
+      return ok({
+        root: tree.root,
+        contracts: tree.contracts,
+        errors: checked.errors,
+        warnings: checked.warnings,
+        hints: checked.hints,
+        totals: {
+          contracts: tree.contracts.length,
+          tokens: tree.contracts.reduce((sum, c) => sum + c.tokens, 0),
+          errors: checked.errors.length,
+          warnings: checked.warnings.length
+        }
+      });
+    },
+    [ROUTES.check]: async (request) => {
+      const root = services.resolveRoot(request, await readBody(request));
+      if (root === void 0) return fail("no-root", "no working directory");
+      const tree = requireTree(root);
+      if (tree === null) return fail("no-archctrl", `.archctrl was not found under ${root}`);
+      return ok(checkTree(tree));
+    },
+    [ROUTES.contract]: async (request) => {
+      const body = await readBody(request);
+      const root = services.resolveRoot(request, body);
+      if (root === void 0) return fail("no-root", "no working directory");
+      const module = typeof body.module === "string" ? body.module : new URL(request.url).searchParams.get("module") ?? "";
+      const tree = requireTree(root);
+      if (tree === null) return fail("no-archctrl", `.archctrl was not found under ${root}`);
+      const wanted = module === "" || module === "root" || module === "null" ? null : module;
+      const contract = tree.contracts.find((c) => c.module === wanted);
+      if (contract === void 0) return fail("unknown-module", `no contract for module "${module}"`);
+      return ok({
+        module: contract.module,
+        contract: contract.contract,
+        path: contract.path,
+        tokens: contract.tokens,
+        text: readFileSync3(join4(tree.root, contract.path), "utf8")
+      });
+    },
+    [ROUTES.review]: async (request) => {
+      const body = await readBody(request);
+      const root = services.resolveRoot(request, body);
+      if (root === void 0) return fail("no-root", "no working directory");
+      const tree = requireTree(root);
+      if (tree === null) return fail("no-archctrl", `.archctrl was not found under ${root}`);
+      const base = typeof body.base === "string" && body.base !== "" ? body.base : "main";
+      return ok(reviewChanges(tree, base));
+    },
+    [ROUTES.propose]: async (request) => {
+      const body = await readBody(request);
+      const root = services.resolveRoot(request, body);
+      if (root === void 0) return fail("no-root", "no working directory");
+      const tree = requireTree(root);
+      if (tree === null) return fail("no-archctrl", `.archctrl was not found under ${root}`);
+      const paths = Array.isArray(body.paths) ? body.paths.filter((p) => typeof p === "string") : [];
+      const attribution = impact(tree, paths);
+      const checked = checkTree(tree);
+      return ok({
+        targets: attribution.modules.map((hit) => {
+          const contract = tree.contracts.find((c) => String(c.module) === hit.module) ?? null;
+          return {
+            module: hit.module,
+            contract: contract?.contract ?? null,
+            tokens: contract?.tokens ?? 0,
+            paths: hit.paths,
+            depends: contract?.depends ?? [],
+            verifies: contract?.verifies ?? []
+          };
+        }),
+        dependents: attribution.dependents,
+        unmatched: attribution.unmatched,
+        errors: checked.errors,
+        warnings: checked.warnings
+      });
+    },
+    [ROUTES.judge]: async (request, runtime) => {
+      const body = await readBody(request);
+      const root = services.resolveRoot(request, body);
+      if (root === void 0) return fail("no-root", "no working directory");
+      const tree = requireTree(root);
+      if (tree === null) return fail("no-archctrl", `.archctrl was not found under ${root}`);
+      const module = typeof body.module === "string" ? body.module : "";
+      const wanted = module === "" || module === "root" ? null : module;
+      const contract = tree.contracts.find((c) => c.module === wanted);
+      if (contract === void 0) return fail("unknown-module", `no contract for module "${module}"`);
+      if (runtime.llm === void 0) return fail("no-llm", "this Host provides no model service");
+      if (runtime.llmConfig === void 0) {
+        return fail("no-model", "this Session has not chosen a model yet; send one message first");
+      }
+      const base = typeof body.base === "string" && body.base !== "" ? body.base : "main";
+      try {
+        return ok(await judgeContract(runtime.llm, runtime.llmConfig, tree, contract, base, request.signal));
+      } catch (error) {
+        return fail("judge-failed", error instanceof Error ? error.message : String(error));
+      }
+    },
+    [ROUTES.active]: async (request) => {
+      const body = await readBody(request);
+      const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
+      const root = services.resolveRoot(request, body);
+      const tree = root === void 0 ? null : readTree(root);
+      const read = services.readModules(sessionId);
+      return ok({
+        sessionId,
+        root: tree?.root ?? null,
+        read,
+        contracts: (tree?.contracts ?? []).map((c) => ({
+          module: String(c.module),
+          tokens: c.tokens,
+          read: read.includes(String(c.module))
+        }))
+      });
+    }
+  };
+}
 
 // src/host/onboard.ts
-import { existsSync as existsSync3, readFileSync as readFileSync2, readdirSync as readdirSync3, statSync as statSync2 } from "node:fs";
-import { dirname as dirname2, join as join3, relative as relative2, resolve } from "node:path";
+import { existsSync as existsSync3, readFileSync as readFileSync4, readdirSync as readdirSync3, statSync as statSync2 } from "node:fs";
+import { dirname as dirname2, join as join5, relative as relative2, resolve } from "node:path";
 var CANDIDATE_ROOTS = ["internal", "app", "src", "cmd", "web/src", "frontend/src", "lib", "pkg"];
 var GOVERNABLE = /^(internal|app|frontend|web|cmd|resource|scripts|lib|pkg|src)\//;
 var IGNORED = /* @__PURE__ */ new Set([
@@ -483,7 +836,7 @@ function governingDirectory(repoRoot, cited) {
   if (!GOVERNABLE.test(candidate)) return null;
   if (IGNORED.has(candidate)) return null;
   for (let depth = 0; depth < 4; depth += 1) {
-    const full = join3(repoRoot, candidate);
+    const full = join5(repoRoot, candidate);
     if (existsSync3(full)) {
       try {
         if (statSync2(full).isDirectory()) return candidate;
@@ -509,7 +862,7 @@ function pruneNested(paths) {
 function proposalModules(repoRoot) {
   const found = [];
   for (const root of CANDIDATE_ROOTS) {
-    const base = join3(repoRoot, root);
+    const base = join5(repoRoot, root);
     if (!existsSync3(base)) continue;
     let entries;
     try {
@@ -611,10 +964,10 @@ function ownershipQuestions(tree, contested, excerptLimit = 2) {
   return contested.map((entry) => ({
     path: entry.path,
     candidates: entry.contracts.map((contractPath) => {
-      const full = join3(tree.root, ".archctrl", contractPath);
+      const full = join5(tree.root, ".archctrl", contractPath);
       let text;
       try {
-        text = readFileSync2(full, "utf8");
+        text = readFileSync4(full, "utf8");
       } catch {
         text = "";
       }
@@ -641,522 +994,6 @@ function applyOwnershipAnswers(proposals, answers) {
     });
     return { ...proposal, owns: kept };
   });
-}
-
-// src/host/judge.ts
-import { readFileSync as readFileSync3, writeFileSync } from "node:fs";
-import { join as join4 } from "node:path";
-var JUDGE_INSTRUCTIONS = `You review whether an architecture contract still describes the code.
-
-You are given: one contract document, the diff summary of the files it governs,
-and the declarations added or changed in them.
-
-Report a change ONLY when all three hold:
-1. The diff touches a rule the contract states explicitly, not merely "code was added".
-2. That rule is now false, incomplete, or requires a new exception.
-3. You can quote the contract line that must change.
-
-Otherwise answer {"change": false, "reason": "..."} and say why the contract still
-holds. Do not propose edits to record that work happened: a contract is a set of
-decisions, not a changelog. Never propose adding a rule the code does not already
-obey, and never restate what the diff did. If a rule is merely worth rewording,
-that is not a change.
-
-When a change is required, return the COMPLETE new document body (not a patch),
-keeping every unaffected line byte-identical, and list the single contract line
-your change is based on.`;
-function evidenceFor(tree, contract, base) {
-  const range = `${base}...HEAD`;
-  const read = (args) => git(tree.root, args) ?? "";
-  const owned = contract.owns.length > 0 ? contract.owns : [".archctrl"];
-  const lines = [
-    read(["diff", "--stat", range, "--", ...owned]),
-    read(["diff", "--stat", "HEAD", "--", ...owned]),
-    read(["diff", "-U0", range, "--", ...owned]).split("\n").filter((line) => /^\+\s*(func|type|export|interface|class)\b/.test(line)).slice(0, 40).join("\n")
-  ];
-  return lines.join("\n").trim();
-}
-function judgePrompt(tree, contract, evidence) {
-  const full = readFileSync3(join4(tree.root, contract.path), "utf8");
-  const { body } = splitDocument(full);
-  return [
-    `Contract: ${contract.path}`,
-    `Module: ${contract.module ?? "(root)"}`,
-    `Governs: ${contract.owns.join(", ") || "(nothing declared)"}`,
-    "",
-    "=== CONTRACT (current) ===",
-    body.trim(),
-    "",
-    "=== DIFF SUMMARY OF THE GOVERNED FILES ===",
-    evidence.trim() || "(no diff)"
-  ].join("\n");
-}
-function parseAnswer(text) {
-  const trimmed = text.trim();
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start < 0 || end <= start) {
-    throw new Error(`model did not answer with JSON: ${trimmed.slice(0, 200)}`);
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(trimmed.slice(start, end + 1));
-  } catch (error) {
-    throw new Error(`model answer is not valid JSON`, { cause: error });
-  }
-  if (typeof parsed !== "object" || parsed === null) {
-    throw new Error("model answer is not an object");
-  }
-  const record = parsed;
-  if (typeof record.change !== "boolean") {
-    throw new Error('model answer has no boolean "change"');
-  }
-  return {
-    change: record.change,
-    reason: typeof record.reason === "string" ? record.reason : "",
-    basis: typeof record.basis === "string" ? record.basis : "",
-    ...typeof record.body === "string" ? { body: record.body } : {}
-  };
-}
-async function judgeContract(llm, callConfig, tree, contract, base, signal) {
-  const prompt = judgePrompt(tree, contract, evidenceFor(tree, contract, base));
-  const prepared = await llm.prepareCall(callConfig, signal);
-  let text = "";
-  for await (const chunk of prepared.stream({
-    provider: prepared.config.provider,
-    model: prepared.config.model,
-    messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
-    system: JUDGE_INSTRUCTIONS,
-    signal
-  })) {
-    if (chunk.type === "text-delta" && typeof chunk.text === "string") text += chunk.text;
-  }
-  const answer = parseAnswer(text);
-  return {
-    module: String(contract.module),
-    contract: contract.contract,
-    change: answer.change,
-    reason: answer.reason,
-    basis: answer.basis,
-    ...answer.body === void 0 ? {} : { body: answer.body }
-  };
-}
-function applyContract(tree, contract, body) {
-  const full = join4(tree.root, contract.path);
-  const current = readFileSync3(full, "utf8");
-  const { frontmatter } = splitDocument(current);
-  const normalized = body.endsWith("\n") ? body : `${body}
-`;
-  writeFileSync(full, frontmatter + normalized, "utf8");
-  if (git(tree.root, ["add", "--", contract.path]) === null) {
-    throw new Error(`git add failed for ${contract.path}`);
-  }
-  const message = `docs(archctrl): update ${contract.module ?? "root"} contract`;
-  if (git(tree.root, ["commit", "-m", message, "--", contract.path]) === null) {
-    throw new Error("git commit failed; the file was written but not committed");
-  }
-  const hash = git(tree.root, ["rev-parse", "--short", "HEAD"]) ?? "";
-  return { path: contract.path, commit: hash, message };
-}
-var OWNERSHIP_INSTRUCTIONS = `You assign code paths to architecture contracts.
-
-For each path, choose the ONE contract that decides how that code must be built
-or changed. A contract that merely mentions a path is not its owner: a startup
-file is mentioned by every module but is governed by the one that defines
-startup order.
-
-Rules:
-1. Exactly one contract per path. If none decides it, answer "none".
-2. Prefer the narrowest contract that states a rule about the path.
-3. Test and generated files belong to the contract that owns the code they
-   verify or generate.
-4. Answer only the JSON asked for. Never invent a contract name.`;
-async function resolveOwnership(llm, callConfig, questions, signal) {
-  if (questions.length === 0) return [];
-  const prompt = [
-    "Resolve ownership for these paths.",
-    "",
-    ...questions.map(
-      (q) => [
-        `PATH: ${q.path}`,
-        ...q.candidates.map((c) => `  - ${c.module}: ${c.title}
-    ${c.excerpt}`)
-      ].join("\n")
-    ),
-    "",
-    "Answer with JSON only:",
-    '{"answers":[{"path":"...","module":"<module or null>","because":"<one clause>"}]}'
-  ].join("\n");
-  const prepared = await llm.prepareCall(callConfig, signal);
-  let text = "";
-  for await (const chunk of prepared.stream({
-    provider: prepared.config.provider,
-    model: prepared.config.model,
-    messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
-    system: OWNERSHIP_INSTRUCTIONS,
-    signal
-  })) {
-    if (chunk.type === "text-delta" && typeof chunk.text === "string") text += chunk.text;
-  }
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new Error("ownership answer is not JSON");
-  const parsed = JSON.parse(text.slice(start, end + 1));
-  const answers = parsed.answers;
-  if (!Array.isArray(answers)) throw new Error('ownership answer has no "answers" array');
-  return answers.filter((entry) => typeof entry === "object" && entry !== null).map((entry) => ({
-    path: typeof entry.path === "string" ? entry.path : "",
-    module: typeof entry.module === "string" && entry.module !== "" && entry.module !== "none" ? entry.module : null,
-    because: typeof entry.because === "string" ? entry.because : ""
-  })).filter((answer) => answer.path !== "");
-}
-
-// src/host/routes.ts
-var ROUTES = {
-  state: "/api/archctrl/state",
-  check: "/api/archctrl/check",
-  contract: "/api/archctrl/contract",
-  review: "/api/archctrl/review",
-  propose: "/api/archctrl/propose",
-  judge: "/api/archctrl/judge",
-  apply: "/api/archctrl/apply",
-  workspaces: "/api/archctrl/workspaces",
-  active: "/api/archctrl/active",
-  // Onboarding: diagnose a tree that was written by hand, then propose the
-  // frontmatter it is missing or a scaffold for a repository that has none.
-  diagnose: "/api/archctrl/diagnose",
-  repair: "/api/archctrl/repair",
-  scaffold: "/api/archctrl/scaffold"
-};
-var json = (value, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store" } });
-var ok = (value) => json({ ok: true, value });
-var fail = (code, message) => json({ ok: false, error: { code, message } });
-async function readBody(request) {
-  if (request.method !== "POST") return {};
-  try {
-    const parsed = await request.json();
-    return typeof parsed === "object" && parsed !== null ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-function createRoutes(services) {
-  const requireTree = (root) => root === void 0 ? null : readTree(root);
-  return {
-    [ROUTES.workspaces]: async () => {
-      const collected = [];
-      const seen = /* @__PURE__ */ new Set();
-      for (const workspace of services.workspaces?.() ?? []) {
-        if (seen.has(workspace.path)) continue;
-        seen.add(workspace.path);
-        collected.push(workspace);
-      }
-      const registryCount = collected.length;
-      for (const directory of services.sessionDirectories?.() ?? []) {
-        if (seen.has(directory)) continue;
-        seen.add(directory);
-        collected.push({
-          id: directory,
-          title: directory.split("/").filter(Boolean).pop() ?? directory,
-          path: directory,
-          hasContracts: false,
-          source: "session"
-        });
-      }
-      if (collected.length === 0) {
-        const host = services.hostDirectory?.();
-        if (host !== void 0 && host !== "") {
-          collected.push({
-            id: host,
-            title: host.split("/").filter(Boolean).pop() ?? host,
-            path: host,
-            hasContracts: false,
-            source: "host"
-          });
-        }
-      }
-      return ok({
-        items: collected,
-        source: { registry: registryCount, sessions: collected.length - registryCount }
-      });
-    },
-    [ROUTES.state]: async (request) => {
-      const root = services.resolveRoot(request, await readBody(request));
-      if (root === void 0) return fail("no-root", "no working directory");
-      const tree = requireTree(root);
-      if (tree === null) return fail("no-archctrl", `.archctrl was not found under ${root}`);
-      const checked = checkTree(tree);
-      return ok({
-        root: tree.root,
-        contracts: tree.contracts,
-        errors: checked.errors,
-        warnings: checked.warnings,
-        hints: checked.hints,
-        totals: {
-          contracts: tree.contracts.length,
-          tokens: tree.contracts.reduce((sum, c) => sum + c.tokens, 0),
-          errors: checked.errors.length,
-          warnings: checked.warnings.length
-        }
-      });
-    },
-    [ROUTES.check]: async (request) => {
-      const root = services.resolveRoot(request, await readBody(request));
-      if (root === void 0) return fail("no-root", "no working directory");
-      const tree = requireTree(root);
-      if (tree === null) return fail("no-archctrl", `.archctrl was not found under ${root}`);
-      return ok(checkTree(tree));
-    },
-    [ROUTES.contract]: async (request) => {
-      const body = await readBody(request);
-      const root = services.resolveRoot(request, body);
-      if (root === void 0) return fail("no-root", "no working directory");
-      const module = typeof body.module === "string" ? body.module : new URL(request.url).searchParams.get("module") ?? "";
-      const tree = requireTree(root);
-      if (tree === null) return fail("no-archctrl", `.archctrl was not found under ${root}`);
-      const wanted = module === "" || module === "root" || module === "null" ? null : module;
-      const contract = tree.contracts.find((c) => c.module === wanted);
-      if (contract === void 0) return fail("unknown-module", `no contract for module "${module}"`);
-      return ok({
-        module: contract.module,
-        contract: contract.contract,
-        path: contract.path,
-        tokens: contract.tokens,
-        text: readFileSync4(join5(tree.root, contract.path), "utf8")
-      });
-    },
-    [ROUTES.review]: async (request) => {
-      const body = await readBody(request);
-      const root = services.resolveRoot(request, body);
-      if (root === void 0) return fail("no-root", "no working directory");
-      const tree = requireTree(root);
-      if (tree === null) return fail("no-archctrl", `.archctrl was not found under ${root}`);
-      const base = typeof body.base === "string" && body.base !== "" ? body.base : "main";
-      return ok(reviewChanges(tree, base));
-    },
-    [ROUTES.propose]: async (request) => {
-      const body = await readBody(request);
-      const root = services.resolveRoot(request, body);
-      if (root === void 0) return fail("no-root", "no working directory");
-      const tree = requireTree(root);
-      if (tree === null) return fail("no-archctrl", `.archctrl was not found under ${root}`);
-      const paths = Array.isArray(body.paths) ? body.paths.filter((p) => typeof p === "string") : [];
-      const attribution = impact(tree, paths);
-      const checked = checkTree(tree);
-      return ok({
-        targets: attribution.modules.map((hit) => {
-          const contract = tree.contracts.find((c) => String(c.module) === hit.module) ?? null;
-          return {
-            module: hit.module,
-            contract: contract?.contract ?? null,
-            tokens: contract?.tokens ?? 0,
-            paths: hit.paths,
-            depends: contract?.depends ?? [],
-            verifies: contract?.verifies ?? []
-          };
-        }),
-        dependents: attribution.dependents,
-        unmatched: attribution.unmatched,
-        errors: checked.errors,
-        warnings: checked.warnings
-      });
-    },
-    [ROUTES.judge]: async (request, runtime) => {
-      const body = await readBody(request);
-      const root = services.resolveRoot(request, body);
-      if (root === void 0) return fail("no-root", "no working directory");
-      const tree = requireTree(root);
-      if (tree === null) return fail("no-archctrl", `.archctrl was not found under ${root}`);
-      const module = typeof body.module === "string" ? body.module : "";
-      const wanted = module === "" || module === "root" ? null : module;
-      const contract = tree.contracts.find((c) => c.module === wanted);
-      if (contract === void 0) return fail("unknown-module", `no contract for module "${module}"`);
-      if (runtime.llm === void 0) return fail("no-llm", "this Host provides no model service");
-      if (runtime.llmConfig === void 0) {
-        return fail("no-model", "this Session has not chosen a model yet; send one message first");
-      }
-      const base = typeof body.base === "string" && body.base !== "" ? body.base : "main";
-      try {
-        return ok(await judgeContract(runtime.llm, runtime.llmConfig, tree, contract, base, request.signal));
-      } catch (error) {
-        return fail("judge-failed", error instanceof Error ? error.message : String(error));
-      }
-    },
-    [ROUTES.apply]: async (request) => {
-      const body = await readBody(request);
-      const root = services.resolveRoot(request, body);
-      if (root === void 0) return fail("no-root", "no working directory");
-      const tree = requireTree(root);
-      if (tree === null) return fail("no-archctrl", `.archctrl was not found under ${root}`);
-      const module = typeof body.module === "string" ? body.module : "";
-      const wanted = module === "" || module === "root" ? null : module;
-      const contract = tree.contracts.find((c) => c.module === wanted);
-      if (contract === void 0) return fail("unknown-module", `no contract for module "${module}"`);
-      if (typeof body.body !== "string" || body.body.trim() === "") {
-        return fail("empty-body", "the accepted revision is empty");
-      }
-      try {
-        return ok(applyContract(tree, contract, body.body));
-      } catch (error) {
-        return fail("apply-failed", error instanceof Error ? error.message : String(error));
-      }
-    },
-    [ROUTES.diagnose]: async (request) => {
-      const body = await readBody(request);
-      const root = services.resolveRoot(request, body);
-      if (root === void 0) return fail("no-root", "no working directory");
-      const tree = requireTree(root);
-      if (tree === null) {
-        return ok({
-          state: "empty",
-          root,
-          modules: proposalModules(root),
-          contracts: [],
-          frontmatter: []
-        });
-      }
-      const checked = checkTree(tree);
-      const proposals = proposeFrontmatter(tree);
-      const undeclared = tree.contracts.filter((c) => c.owns.length === 0).length;
-      return ok({
-        state: undeclared === 0 ? "declared" : "undeclared",
-        root,
-        modules: [],
-        contracts: tree.contracts.map((c) => ({
-          module: c.module,
-          contract: c.contract,
-          tokens: c.tokens,
-          owns: c.owns.length
-        })),
-        frontmatter: proposals.map((p) => ({
-          ...p,
-          block: renderFrontmatter(p.owns)
-        })),
-        totals: {
-          contracts: tree.contracts.length,
-          undeclared,
-          errors: checked.errors.length,
-          warnings: checked.warnings.length
-        }
-      });
-    },
-    [ROUTES.repair]: async (request, runtime) => {
-      const body = await readBody(request);
-      const root = services.resolveRoot(request, body);
-      if (root === void 0) return fail("no-root", "no working directory");
-      const tree = requireTree(root);
-      if (tree === null) return fail("no-archctrl", `.archctrl was not found under ${root}`);
-      const apply2 = body.apply === true;
-      const proposals = proposeFrontmatter(tree);
-      const contested = contestedPaths(proposals);
-      let resolved = [];
-      let modelNote;
-      if (body.useModel === true && contested.length > 0) {
-        if (runtime.llm === void 0) {
-          modelNote = "no-llm";
-        } else if (runtime.llmConfig === void 0) {
-          modelNote = "no-model";
-        } else {
-          try {
-            resolved = await resolveOwnership(
-              runtime.llm,
-              runtime.llmConfig,
-              ownershipQuestions(tree, contested, 2),
-              request.signal
-            );
-          } catch (error) {
-            modelNote = error instanceof Error ? error.message : String(error);
-          }
-        }
-      }
-      const merged = applyOwnershipAnswers(proposals, resolved);
-      const results = [];
-      for (const proposal of merged) {
-        if (!apply2 || proposal.owns.length === 0) {
-          results.push({ ...proposal, applied: false });
-          continue;
-        }
-        const commit = insertFrontmatter(tree.root, proposal.contract, proposal.owns);
-        results.push({
-          contract: proposal.contract,
-          owns: proposal.owns,
-          unresolved: proposal.unresolved,
-          applied: commit !== void 0,
-          ...commit === void 0 ? {} : { commit }
-        });
-      }
-      return ok({
-        applied: apply2,
-        proposed: proposals.length,
-        contested: contested.length,
-        resolved: resolved.length,
-        ...modelNote === void 0 ? {} : { modelNote },
-        results
-      });
-    },
-    [ROUTES.scaffold]: async (request) => {
-      const body = await readBody(request);
-      const root = services.resolveRoot(request, body);
-      if (root === void 0) return fail("no-root", "no working directory");
-      const modules = proposalModules(root);
-      const wanted = Array.isArray(body.modules) ? body.modules.filter((m) => typeof m === "string") : modules.map((m) => m.module);
-      const plan = modules.filter((m) => wanted.includes(m.module)).map((m) => ({
-        module: m.module,
-        path: scaffoldPath(m.module),
-        owns: m.owns,
-        text: scaffoldContract(m.module, m.owns)
-      }));
-      if (body.apply !== true) return ok({ applied: false, plan });
-      const written = writeScaffold(root, plan);
-      return ok({ applied: true, plan, written });
-    },
-    [ROUTES.active]: async (request) => {
-      const body = await readBody(request);
-      const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
-      const root = services.resolveRoot(request, body);
-      const tree = root === void 0 ? null : readTree(root);
-      const read = services.readModules(sessionId);
-      return ok({
-        sessionId,
-        root: tree?.root ?? null,
-        read,
-        contracts: (tree?.contracts ?? []).map((c) => ({
-          module: String(c.module),
-          tokens: c.tokens,
-          read: read.includes(String(c.module))
-        }))
-      });
-    }
-  };
-}
-function insertFrontmatter(root, contract, owns) {
-  const full = join5(root, contract);
-  const source = readFileSync4(full, "utf8");
-  if (source.startsWith("---\n")) return void 0;
-  writeFileSync2(full, withFrontmatter(source, `${renderFrontmatter(owns)}`), "utf8");
-  const message = `docs(archctrl): declare scope for ${contract}`;
-  if (git(root, ["add", "--", contract]) === null) return void 0;
-  if (git(root, ["commit", "-m", message, "--", contract]) === null) return void 0;
-  return git(root, ["rev-parse", "--short", "HEAD"]) ?? void 0;
-}
-function writeScaffold(root, plan) {
-  const out = [];
-  for (const entry of plan) {
-    const full = join5(root, entry.path);
-    mkdirSync(dirname3(full), { recursive: true });
-    writeFileSync2(full, entry.text, "utf8");
-    out.push({ path: entry.path });
-  }
-  if (plan.length === 0) return out;
-  const paths = plan.map((entry) => entry.path);
-  if (git(root, ["add", "--", ...paths]) !== null) {
-    const message = `docs(archctrl): scaffold ${paths.length} contracts`;
-    if (git(root, ["commit", "-m", message, "--", ...paths]) !== null) {
-      const hash = git(root, ["rev-parse", "--short", "HEAD"]);
-      if (hash !== null) for (const entry of out) entry.commit = hash;
-    }
-  }
-  return out;
 }
 
 // src/host/index.ts

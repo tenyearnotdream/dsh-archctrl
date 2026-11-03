@@ -18,14 +18,11 @@ import { ActiveStrip } from './ActiveStrip.js';
 import { ContractDetail } from './ContractDetail.js';
 import { ContractTree } from './ContractTree.js';
 import { Overview } from './Overview.js';
-import { Onboarding } from './Onboarding.js';
-import { ReviewPanel } from './ReviewPanel.js';
 import { Badge } from './ui/badge.js';
 import { Button } from './ui/button.js';
 import { Segmented } from './ui/switch.js';
 import { t } from '../locale/index.js';
 
-type Mode = 'tree' | 'review' | 'onboard';
 type Scope = 'active' | 'all';
 
 /** The reading log is served by the same Host route the strip uses. */
@@ -97,29 +94,41 @@ function StateScreen({
   );
 }
 
-/** Onboarding, for a repository that has no tree yet. */
-function SetupScreen({
-  loader,
-  onDone,
-  onClose,
-}: {
-  loader: WorkspaceLoader;
-  onDone: () => void;
-  onClose: () => void;
-}) {
+/**
+ * What a repository without a contract tree sees.
+ *
+ * The panel no longer offers to scaffold one. Writing a contract is a design
+ * decision, so it belongs to the conversation that has read the code, not to a
+ * button that invents bodies from directory names.
+ */
+function MissingTreeScreen({ loader, onRefresh }: { loader: WorkspaceLoader; onRefresh: () => void }) {
+  // Switching repository here must also read it. The panel returns this screen
+  // from a branch, so the tree effect's cleanup cancels the in-flight read for
+  // the previous root and the selector alone would leave the operator looking at
+  // one repository's refusal under another repository's name.
+  const picker: WorkspaceLoader = {
+    ...loader,
+    select: (path: string) => {
+      if (path === loader.root) return;
+      loader.select(path);
+      onRefresh();
+    },
+  };
   return (
     <div className="archctrl-root">
       <header className="flex flex-wrap items-center gap-1.5 border-b border-border px-3 py-2">
-        <span className="text-[13px] font-semibold">{t('onboard.title')}</span>
-        <RepositoryPicker loader={loader} />
-        <div className="ml-auto flex items-center gap-1">
-          <Button size="sm" onClick={onClose}>
-            {t('detail.close')}
+        <span className="text-[13px] font-semibold">{t('panel.title')}</span>
+        <RepositoryPicker loader={picker} />
+      </header>
+      <div className="archctrl-scroll min-h-0 flex-1 p-3">
+        <p className="max-w-96 text-[11px] leading-relaxed text-muted-foreground">
+          {t('onboard.missing')}
+        </p>
+        <div className="mt-2">
+          <Button size="sm" onClick={onRefresh}>
+            {t('header.refresh')}
           </Button>
         </div>
-      </header>
-      <div className="archctrl-scroll min-h-0 flex-1">
-        <Onboarding key={loader.root} root={loader.root} onDone={onDone} />
       </div>
     </div>
   );
@@ -129,17 +138,11 @@ export function Panel() {
   const workspaces = useWorkspaces();
   const tree = useTree(workspaces.root);
   const reading = useReadingLog();
-  const [mode, setMode] = useState<Mode>('tree');
   const [scope, setScope] = useState<Scope>('all');
   // `undefined` means "nothing selected" (Overview); `null` is the root index,
   // which is a real document like any other. Using a string such as 'overview'
   // would collide with a module named that and hide the root contract.
   const [selected, setSelected] = useState<string | null | undefined>(undefined);
-  // A repository with no `.archctrl` has no tree to render, and that is exactly
-  // the repository onboarding exists for. The flag keeps the flow open while it
-  // runs; the refusal itself clears on the next read.
-  const [setup, setSetup] = useState(false);
-
   if (workspaces.error !== null && tree.state === null) {
     return (
       <StateScreen
@@ -153,15 +156,12 @@ export function Panel() {
   if (tree.state === null) {
     if (tree.error !== null) {
       const missing = tree.error instanceof ApiError && tree.error.code === 'no-archctrl';
-      if (missing && setup) {
+      if (missing) {
         return (
-          <SetupScreen
+          <MissingTreeScreen
+            key={workspaces.root}
             loader={workspaces}
-            onClose={() => setSetup(false)}
-            onDone={() => {
-              setSetup(false);
-              tree.reload();
-            }}
+            onRefresh={tree.reload}
           />
         );
       }
@@ -174,16 +174,9 @@ export function Panel() {
           tone="danger"
           message={t('state.error', { message: describeError(tree.error) })}
           actions={
-            <>
-              {missing ? (
-                <Button size="sm" variant="primary" onClick={() => setSetup(true)}>
-                  {t('onboard.title')}
-                </Button>
-              ) : null}
-              <Button size="sm" onClick={tree.reload} disabled={tree.loading}>
-                {tree.loading ? t('header.refreshing') : t('header.refresh')}
-              </Button>
-            </>
+            <Button size="sm" onClick={tree.reload} disabled={tree.loading}>
+              {tree.loading ? t('header.refreshing') : t('header.refresh')}
+            </Button>
           }
         />
       );
@@ -219,41 +212,19 @@ export function Panel() {
         </span>
         {state.totals.errors > 0 ? <Badge tone="danger">{t('header.errors', { count: state.totals.errors })}</Badge> : null}
         {state.totals.warnings > 0 ? <Badge tone="warning">{t('header.warnings', { count: state.totals.warnings })}</Badge> : null}
+        {/* A contract that never stated its scope looks complete in the tree, so
+            the count is the only place this shows up. It is informational now:
+            fixing it is a conversation decision, not a panel action. */}
+        {undeclared > 0 ? <Badge tone="warning">{t('header.undeclared', { count: undeclared })}</Badge> : null}
 
         <div className="ml-auto flex items-center gap-1">
-          <Button size="sm" onClick={() => setMode(mode === 'review' ? 'tree' : 'review')}>
-            {mode === 'review' ? t('review.back-to-tree') : t('review.title')}
-          </Button>
-          <Button
-            size="sm"
-            variant={undeclared > 0 ? 'danger' : 'secondary'}
-            onClick={() => setMode(mode === 'onboard' ? 'tree' : 'onboard')}
-          >
-            {mode === 'onboard' ? t('review.back-to-tree') : t('onboard.title')}
-          </Button>
           <Button size="sm" variant="primary" onClick={tree.reload} disabled={tree.loading}>
             {tree.loading ? t('header.refreshing') : t('header.refresh')}
           </Button>
         </div>
       </header>
 
-      {mode === 'onboard' ? (
-        <div className="archctrl-scroll min-h-0 flex-1">
-          <Onboarding
-            key={workspaces.root}
-            root={workspaces.root}
-            onDone={() => {
-              tree.reload();
-              setMode('tree');
-            }}
-          />
-        </div>
-      ) : mode === 'review' ? (
-        <div className="archctrl-scroll min-h-0 flex-1">
-          <ReviewPanel root={workspaces.root} />
-        </div>
-      ) : (
-        <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1">
           <aside className="flex w-64 shrink-0 flex-col border-r border-border">
             <div className="flex items-center gap-1 border-b border-border px-2 py-1.5">
               <Segmented
@@ -303,8 +274,7 @@ export function Panel() {
               <ActiveStrip />
             </div>
           </main>
-        </div>
-      )}
+      </div>
     </div>
   );
 }

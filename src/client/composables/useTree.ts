@@ -23,6 +23,7 @@ export interface TreeLoader {
   reload(): void;
 }
 
+/** A read target the panel can hand over explicitly, bypassing the effect race. */
 export function useTree(root: string): TreeLoader {
   const [state, setState] = useState<TreeState | null>(null);
   const [error, setError] = useState<Error | null>(null);

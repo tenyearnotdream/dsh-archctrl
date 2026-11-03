@@ -198,6 +198,7 @@ test('applying registers every slot the plugin ships', () => {
     slots.map((entry) => [entry.slot, entry.id]),
     [
       ['sidebar.panellist', 'archctrl'],
+      ['conversation.composer.dock', 'archctrl-check'],
       ['conversation.composer.dock', 'archctrl-reads'],
       ['main', 'archctrl'],
       ['sidebar.right.pane.tab', 'archctrl'],
